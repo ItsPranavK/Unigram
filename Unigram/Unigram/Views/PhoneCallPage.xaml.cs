@@ -6,12 +6,11 @@ using System.IO;
 using System.Linq;
 using System.Numerics;
 using System.Runtime.InteropServices.WindowsRuntime;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
+using Template10.Common;
 using Unigram.Common;
+using Unigram.Controls;
 using Unigram.Converters;
+using Unigram.Entities;
 using Windows.ApplicationModel.Core;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
@@ -31,6 +30,7 @@ using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Media.Animation;
 using Windows.UI.Xaml.Media.Imaging;
 using Windows.UI.Xaml.Navigation;
+using Windows.UI.Xaml.Shapes;
 
 // The Blank Page item template is documented at https://go.microsoft.com/fwlink/?LinkId=234238
 
@@ -49,7 +49,7 @@ namespace Unigram.Views
 
         private bool _collapsed = true;
 
-        private TLPhoneCallState _state;
+        private PhoneCallState _state;
         private string[] _emojis;
         private DateTime _started;
 
@@ -61,7 +61,9 @@ namespace Unigram.Views
 
         private bool _disposed;
 
-        public PhoneCallPage()
+        public ContentDialogBase Dialog { get; set; }
+
+        public PhoneCallPage(bool extend)
         {
             this.InitializeComponent();
 
@@ -112,7 +114,7 @@ namespace Unigram.Views
 
             var coreTitleBar = CoreApplication.GetCurrentView().TitleBar;
             //coreTitleBar.IsVisibleChanged += CoreBar_IsVisibleChanged;
-            coreTitleBar.ExtendViewIntoTitleBar = true;
+            coreTitleBar.ExtendViewIntoTitleBar = extend;
 
             var titleBar = ApplicationView.GetForCurrentView().TitleBar;
             titleBar.ButtonBackgroundColor = Colors.Transparent;
@@ -182,91 +184,100 @@ namespace Unigram.Views
             }
         }
 
-        public void SetCall(TLTuple<TLPhoneCallState, TLPhoneCallBase, TLUserBase, string> tuple)
+        //public void SetCall(TLTuple<TLPhoneCallState, TLPhoneCallBase, TLUserBase, string> tuple)
+        //{
+        //    if (_disposed)
+        //    {
+        //        return;
+        //    }
+
+        //    if (_state != tuple.Item1)
+        //    {
+        //        Debug.WriteLine("[{0:HH:mm:ss.fff}] State changed in app: " + tuple.Item1, DateTime.Now);
+
+        //        _state = tuple.Item1;
+        //        StateLabel.Content = StateToLabel(tuple.Item1);
+
+        //        if (tuple.Item1 == TLPhoneCallState.Established)
+        //        {
+        //            SignalBarsLabel.Visibility = Visibility.Visible;
+        //            StartUpdatingCallDuration();
+
+        //            if (_emojis != null)
+        //            {
+        //                for (int i = 0; i < _emojis.Length; i++)
+        //                {
+        //                    var imageLarge = FindName($"LargeEmoji{i}") as Image;
+        //                    var source = Emoji.BuildUri(_emojis[i]);
+
+        //                    imageLarge.Source = new BitmapImage(new Uri(source));
+        //                }
+        //            }
+        //        }
+        //    }
+
+        //    //if (tuple.Item2 is TLPhoneCallRequested call)
+        //    //{
+        //    //}
+
+        //    if (tuple.Item3 is TLUser user)
+        //    {
+        //        //if (user.HasPhoto && user.Photo is TLUserProfilePhoto)
+        //        //{
+        //        //    Image.Source = DefaultPhotoConverter.Convert(user, true) as ImageSource;
+        //        //    GrabPanel.Background = new SolidColorBrush(Colors.Transparent);
+        //        //}
+        //        //else
+        //        {
+        //            Image.Source = null;
+        //            GrabPanel.Background = PlaceholderHelper.GetBrush(user.Id);
+        //        }
+
+        //        FromLabel.Text = user.FullName;
+        //        DescriptionLabel.Text = string.Format(Strings.Resources.CallEmojiKeyTooltip, user.FirstName);
+        //    }
+
+        //    if (tuple.Item4.Length > 0)
+        //    {
+        //        _emojis = tuple.Item4.Split(' ');
+        //    }
+        //}
+
+        public void SetSignalBars(int count)
         {
-            if (_disposed)
+            for (int i = 1; i < 5; i++)
             {
-                return;
-            }
-
-            if (_state != tuple.Item1)
-            {
-                Debug.WriteLine("[{0:HH:mm:ss.fff}] State changed in app: " + tuple.Item1, DateTime.Now);
-
-                _state = tuple.Item1;
-                StateLabel.Content = StateToLabel(tuple.Item1);
-
-                if (tuple.Item1 == TLPhoneCallState.Established)
-                {
-                    StartUpdatingCallDuration();
-
-                    if (_emojis != null)
-                    {
-                        for (int i = 0; i < _emojis.Length; i++)
-                        {
-                            var imageLarge = FindName($"LargeEmoji{i}") as Image;
-                            var source = Emoji.BuildUri(_emojis[i]);
-
-                            imageLarge.Source = new BitmapImage(new Uri(source));
-                        }
-                    }
-                }
-            }
-
-            if (tuple.Item2 is TLPhoneCallRequested call)
-            {
-            }
-
-            if (tuple.Item3 is TLUser user)
-            {
-                if (user.HasPhoto && user.Photo is TLUserProfilePhoto)
-                {
-                    Image.Source = DefaultPhotoConverter.Convert(user.Photo, true) as ImageSource;
-                    GrabPanel.Background = new SolidColorBrush(Colors.Transparent);
-                }
-                else
-                {
-                    Image.Source = null;
-                    GrabPanel.Background = BindConvert.Current.Bubble(user.Id);
-                }
-
-                FromLabel.Text = user.FullName;
-                TextBlockHelper.SetMarkdown(DescriptionLabel, string.Format("If these emoji are the same on **{0}**'s screen, this call is 100% secure.", user.FirstName));
-            }
-
-            if (tuple.Item4.Length > 0)
-            {
-                _emojis = tuple.Item4.Split(' ');
+                ((Rectangle)FindName($"Signal{i}")).Fill = Resources[count >= i ? "SignalBarForegroundBrush" : "SignalBarForegroundDisabledBrush"] as SolidColorBrush;
             }
         }
 
-        private string StateToLabel(TLPhoneCallState state)
+        private string StateToLabel(PhoneCallState state)
         {
             switch (state)
             {
-                case TLPhoneCallState.WaitingIncoming:
-                    return "Incoming call";
-                case TLPhoneCallState.WaitInit:
-                case TLPhoneCallState.WaitInitAck:
-                    return "Connecting";
-                case TLPhoneCallState.ExchangingKeys:
-                    return "Exchanging encryption keys";
-                case TLPhoneCallState.Waiting:
-                    return "Waiting";
-                case TLPhoneCallState.Ringing:
-                    return "Ringing";
-                case TLPhoneCallState.Requesting:
-                    return "Requesting";
-                case TLPhoneCallState.HangingUp:
-                    return "Hanging up";
-                case TLPhoneCallState.Ended:
-                    return "Call ended";
-                case TLPhoneCallState.Busy:
-                    return "Line busy";
-                case TLPhoneCallState.Established:
+                case PhoneCallState.WaitingIncoming:
+                    return Strings.Resources.VoipIncoming;
+                case PhoneCallState.WaitInit:
+                case PhoneCallState.WaitInitAck:
+                    return Strings.Resources.VoipConnecting;
+                case PhoneCallState.ExchangingKeys:
+                    return Strings.Resources.VoipExchangingKeys;
+                case PhoneCallState.Waiting:
+                    return Strings.Resources.VoipWaiting;
+                case PhoneCallState.Ringing:
+                    return Strings.Resources.VoipRinging;
+                case PhoneCallState.Requesting:
+                    return Strings.Resources.VoipRequesting;
+                case PhoneCallState.HangingUp:
+                    return Strings.Resources.VoipHangingUp;
+                case PhoneCallState.Ended:
+                    return Strings.Resources.VoipCallEnded;
+                case PhoneCallState.Busy:
+                    return Strings.Resources.VoipBusy;
+                case PhoneCallState.Failed:
+                    return Strings.Resources.VoipFailed;
+                case PhoneCallState.Established:
                     return "00:00";
-                case TLPhoneCallState.Failed:
-                    return "Failed to connect";
             }
 
             return null;
@@ -286,7 +297,7 @@ namespace Unigram.Views
                 StateLabel.Opacity = 0;
             }
 
-            if (_state == TLPhoneCallState.Established)
+            if (_state == PhoneCallState.Established)
             {
                 var duration = DateTime.Now - _started;
                 DurationLabel.Text = duration.ToString(duration.TotalHours >= 1 ? "hh\\:mm\\:ss" : "mm\\:ss");
@@ -341,8 +352,8 @@ namespace Unigram.Views
 
         private async void Hangup_Click(object sender, RoutedEventArgs e)
         {
-            var duration = _state == TLPhoneCallState.Established ? DateTime.Now - _started : TimeSpan.Zero;
-            await VoIPConnection.Current.SendRequestAsync("phone.discardCall", TLTuple.Create(duration.TotalSeconds));
+            var duration = _state == PhoneCallState.Established ? DateTime.Now - _started : TimeSpan.Zero;
+            await VoIPConnection.Current.SendRequestAsync("phone.DiscardCall", Tuple.Create(duration.TotalSeconds));
         }
 
         private void LargeEmojiLabel_Tapped(object sender, TappedRoutedEventArgs e)
@@ -442,11 +453,11 @@ namespace Unigram.Views
         private async void ShowDebugString()
         {
             var result = await VoIPConnection.Current.GetDebugStringAsync();
-            if (result != null)
+            if (result != null && result.Item1 != null)
             {
                 var text = new TextBlock();
                 text.Text = result.Item1;
-                text.Margin = new Thickness(0, 16, 0, 0);
+                text.Margin = new Thickness(12, 16, 12, 0);
                 text.Style = Application.Current.Resources["BodyTextBlockStyle"] as Style;
 
                 var scroll = new ScrollViewer();
@@ -454,11 +465,10 @@ namespace Unigram.Views
                 scroll.VerticalScrollMode = ScrollMode.Auto;
                 scroll.Content = text;
 
-                var dialog = new ContentDialog();
+                var dialog = new ContentDialog { Style = BootStrapper.Current.Resources["ModernContentDialogStyle"] as Style };
                 dialog.Title = $"libtgvoip v{result.Item2}";
                 dialog.Content = scroll;
                 dialog.PrimaryButtonText = "OK";
-                dialog.Style = Application.Current.Resources["FixedContentDialogStyle"] as Style;
                 dialog.Closed += (s, args) =>
                 {
                     _debugDialog = null;
@@ -468,7 +478,7 @@ namespace Unigram.Views
                 _debugDialog = dialog;
                 _debugTimer.Start();
 
-                await dialog.ShowAsync();
+                await dialog.ShowQueuedAsync();
             }
         }
 

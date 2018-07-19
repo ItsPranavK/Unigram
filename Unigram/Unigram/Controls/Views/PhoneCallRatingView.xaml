@@ -1,4 +1,4 @@
-﻿<ContentDialog
+<ContentDialog
     x:Class="Unigram.Controls.Views.PhoneCallRatingView"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -15,7 +15,7 @@
     SecondaryButtonClick="ContentDialog_SecondaryButtonClick">
 
     <StackPanel>
-        <TextBlock Text="Please rate the quality of your Telegram call" Margin="0,24,0,0"/>
+        <TextBlock Text="{CustomResource VoipRateCallAlert}" Margin="0,24,0,0"/>
         <controls:RatingBar x:Name="RatingBar" Value="{x:Bind Rating, Mode=TwoWay}" FontSize="28" Padding="3,8" Margin="0,12" HorizontalAlignment="Center"/>
         <Border MinHeight="{ThemeResource TextControlThemeMinHeight}">
             <TextBox Text="{x:Bind Comment, Mode=TwoWay}" Visibility="{x:Bind ConvertVisibility(RatingBar.Value), Mode=OneWay}" PlaceholderText="Add an optional comment"/>

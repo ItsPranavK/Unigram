@@ -1,15 +1,8 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.Services.FileManager;
-using Telegram.Api.Services.Updates;
-using Telegram.Api.TL;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Converters;
@@ -18,171 +11,164 @@ using Unigram.Core.Services;
 using Unigram.Services;
 using Unigram.Views;
 using Windows.Storage;
-using Windows.System;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
+using Telegram.Td.Api;
+using Windows.ApplicationModel.Core;
+using Windows.Foundation.Metadata;
+using Unigram.ViewModels.Delegates;
 
 namespace Unigram.ViewModels
 {
-   public class SettingsViewModel : UnigramViewModelBase
+   public class SettingsViewModel : UnigramViewModelBase,
+        IDelegable<IUserDelegate>,
+        IHandle<UpdateUser>,
+        IHandle<UpdateUserFullInfo>
     {
-        private readonly IUpdatesService _updatesService;
-        private readonly IPushService _pushService;
+        private readonly INotificationsService _pushService;
         private readonly IContactsService _contactsService;
-        private readonly IUploadFileManager _uploadFileManager;
-        private readonly IStickersService _stickersService;
 
-        public SettingsViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator, IUpdatesService updatesService, IPushService pushService, IContactsService contactsService, IUploadFileManager uploadFileManager, IStickersService stickersService) 
-            : base(protoService, cacheService, aggregator)
+        public IUserDelegate Delegate { get; set; }
+
+        public SettingsViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, INotificationsService pushService, IContactsService contactsService) 
+            : base(protoService, cacheService, settingsService, aggregator)
         {
-            _updatesService = updatesService;
             _pushService = pushService;
             _contactsService = contactsService;
-            _uploadFileManager = uploadFileManager;
-            _stickersService = stickersService;
+
+            AskCommand = new RelayCommand(AskExecute);
+            LogoutCommand = new RelayCommand(LogoutExecute);
+            EditPhotoCommand = new RelayCommand<StorageFile>(EditPhotoExecute);
+        }
+
+        private Chat _chat;
+        public Chat Chat
+        {
+            get
+            {
+                return _chat;
+            }
+            set
+            {
+                Set(ref _chat, value);
+            }
         }
 
         public override async Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
         {
-            var cached = CacheService.GetUser(SettingsHelper.UserId) as TLUser;
-            if (cached != null)
+            var response = await ProtoService.SendAsync(new CreatePrivateChat(ProtoService.GetMyId(), false));
+            if (response is Chat chat)
             {
-                Self = cached;
-            }
-            else
-            {
-                var response = await ProtoService.GetUsersAsync(new TLVector<TLInputUserBase> { new TLInputUserSelf() });
-                if (response.IsSucceeded)
+                Chat = chat;
+
+                Aggregator.Subscribe(this);
+                Delegate?.UpdateChat(chat);
+
+                if (chat.Type is ChatTypePrivate privata)
                 {
-                    var user = response.Result.FirstOrDefault() as TLUser;
-                    if (user != null)
+                    var item = ProtoService.GetUser(privata.UserId);
+                    var cache = ProtoService.GetUserFull(privata.UserId);
+
+                    Delegate?.UpdateUser(chat, item, false);
+
+                    if (cache == null)
                     {
-                        Self = user;
+                        ProtoService.Send(new GetUserFullInfo(privata.UserId));
+                    }
+                    else
+                    {
+                        Delegate?.UpdateUserFullInfo(chat, item, cache, false);
                     }
                 }
             }
         }
 
-        private TLUser _self;
-        public TLUser Self
+
+        public void Handle(UpdateUser update)
         {
-            get
+            var chat = _chat;
+            if (chat == null)
             {
-                return _self;
+                return;
             }
-            set
+
+            if (chat.Type is ChatTypePrivate privata && privata.UserId == update.User.Id)
             {
-                Set(ref _self, value);
+                BeginOnUIThread(() => Delegate?.UpdateUser(chat, update.User, false));
+            }
+            else if (chat.Type is ChatTypeSecret secret && secret.UserId == update.User.Id)
+            {
+                BeginOnUIThread(() => Delegate?.UpdateUser(chat, update.User, true));
             }
         }
 
-        public RelayCommand<StorageFile> EditPhotoCommand => new RelayCommand<StorageFile>(EditPhotoExecute);
+        public void Handle(UpdateUserFullInfo update)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            if (chat.Type is ChatTypePrivate privata && privata.UserId == update.UserId)
+            {
+                BeginOnUIThread(() => Delegate?.UpdateUserFullInfo(chat, ProtoService.GetUser(update.UserId), update.UserFullInfo, false));
+            }
+        }
+
+
+
+        public RelayCommand<StorageFile> EditPhotoCommand { get; }
         private async void EditPhotoExecute(StorageFile file)
         {
-            var fileLocation = new TLFileLocation
-            {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.jpg", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            //var fileScale = await ImageHelper.ScaleJpegAsync(file, fileCache, 640, 0.77);
-
-            await file.CopyAndReplaceAsync(fileCache);
-            var fileScale = fileCache;
-
-            var basicProps = await fileScale.GetBasicPropertiesAsync();
-            var imageProps = await fileScale.Properties.GetImagePropertiesAsync();
-
-            var fileId = TLLong.Random();
-            var upload = await _uploadFileManager.UploadFileAsync(fileId, fileCache.Name, false);
-            if (upload != null)
-            {
-                var response = await ProtoService.UploadProfilePhotoAsync(upload.ToInputFile() as TLInputFile);
-                if (response.IsSucceeded)
-                {
-                    var photo = response.Result.Photo as TLPhoto;
-                }
-            }
+            var props = await file.GetBasicPropertiesAsync();
+            var response = await ProtoService.SendAsync(new SetProfilePhoto(await file.ToGeneratedAsync()));
         }
 
-        public RelayCommand AskCommand => new RelayCommand(AskExecute);
+        public RelayCommand AskCommand { get; }
         private async void AskExecute()
         {
-            var confirm = await TLMessageDialog.ShowAsync("Plase note that Telegram Support is done by volunteers. We try to respond as quickly as possible, but it may take a while.\n\nPlase take a look at the Telegram FAQ: it has important troubleshooting tips and answers to most questions.", "Telegram", "FAQ", "OK");
+            var confirm = await TLMessageDialog.ShowAsync(Strings.Resources.AskAQuestionInfo, Strings.Resources.AskAQuestion, Strings.Resources.AskButton, Strings.Resources.Cancel);
             if (confirm == ContentDialogResult.Primary)
             {
-                await Launcher.LaunchUriAsync(new Uri("https://telegram.org/faq"));
-            }
-            else
-            {
-                var response = await ProtoService.GetSupportAsync();
-                if (response.IsSucceeded)
+                var response = await ProtoService.SendAsync(new GetSupportUser());
+                if (response is User user)
                 {
-                    NavigationService.Navigate(typeof(DialogPage), response.Result.User.ToPeer());
+                    response = await ProtoService.SendAsync(new CreatePrivateChat(user.Id, false));
+                    if (response is Chat chat)
+                    {
+                        NavigationService.NavigateToChat(chat);
+                    }
                 }
             }
         }
 
-        public RelayCommand LogoutCommand => new RelayCommand(LogoutExecute);
+        public RelayCommand LogoutCommand { get; }
         private async void LogoutExecute()
         {
-            var confirm = await TLMessageDialog.ShowAsync("Are you sure you want to logout?", "Unigram", "OK", "Cancel");
+            var confirm = await TLMessageDialog.ShowAsync(Strings.Resources.AreYouSureLogout, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
             if (confirm != ContentDialogResult.Primary)
             {
                 return;
             }
 
             await _pushService.UnregisterAsync();
+            await _contactsService.RemoveAsync();
 
-            var response = await ProtoService.LogOutAsync();
-            if (response.IsSucceeded)
+            var response = await ProtoService.SendAsync(new LogOut());
+            if (response is Error error)
             {
-                await _contactsService.UnsyncContactsAsync();
+                // TODO:
+            }
 
-                SettingsHelper.IsAuthorized = false;
-                SettingsHelper.UserId = 0;
-                ProtoService.ClearQueue();
-                _updatesService.ClearState();
-                _stickersService.Cleanup();
-                CacheService.ClearAsync();
-                CacheService.ClearConfigImportAsync();
-
-                await TLMessageDialog.ShowAsync("The app will be closed. Relaunch it to login again.", "Unigram", "OK");
-                App.Current.Exit();
+            if (ApiInformation.IsMethodPresent("Windows.ApplicationModel.Core.CoreApplication", "RequestRestartAsync"))
+            {
+                await CoreApplication.RequestRestartAsync(string.Empty);
             }
             else
             {
-
+                App.Current.Exit();
             }
         }
-
-#if DEBUG
-
-        public RelayCommand DeleteAccountCommand => new RelayCommand(DeleteAccountExecute);
-        private async void DeleteAccountExecute()
-        {
-            // THIS CODE WILL RUN ONLY IF FIRST CONFIGURED SERVER IP IS TEST SERVER
-            if (Telegram.Api.Constants.FirstServerIpAddress.Equals("149.154.167.40"))
-            {
-                var dialog = new InputDialog();
-                var confirm = await dialog.ShowAsync();
-                if (confirm == ContentDialogResult.Primary && dialog.Text.Equals(Self.Phone) && Self.Username != "frayxrulez")
-                {
-                    var really = await TLMessageDialog.ShowAsync("REAAAALLY???", "REALLYYYY???", "YES", "NO I DON'T WANT TO");
-                    if (really == ContentDialogResult.Primary)
-                    {
-                        await ProtoService.DeleteAccountAsync("Testing registration");
-                        App.Current.Exit();
-                    }
-                }
-            }
-        }
-
-#endif
     }
 }

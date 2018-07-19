@@ -32,7 +32,7 @@ WebPImage^ WebPImage::CreateFromByteArray(const Array<uint8> ^bytes)
 	};
 	if (!spDemuxer)
 	{
-		throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
+		//throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
 		return nullptr;
 	}
 
@@ -83,7 +83,7 @@ WebPImage^ WebPImage::CreateFromByteArray(const Array<uint8> ^bytes)
 	return image;
 }
 
-WriteableBitmap ^ Unigram::Native::WebPImage::DecodeFromBuffer(IBuffer ^ buffer)
+WriteableBitmap^ Unigram::Native::WebPImage::DecodeFromBuffer(IBuffer ^ buffer)
 {
 	ComPtr<IBufferByteAccess> bufferByteAccess;
 	reinterpret_cast<IInspectable*>(buffer)->QueryInterface(IID_PPV_ARGS(&bufferByteAccess));
@@ -94,6 +94,11 @@ WriteableBitmap ^ Unigram::Native::WebPImage::DecodeFromBuffer(IBuffer ^ buffer)
 	WebPData webPData = { webPBuffer, buffer->Length };
 
 	return CreateWriteableBitmapFromWebPData(webPData);
+}
+
+WriteableBitmap^ Unigram::Native::WebPImage::DecodeFromPath(String^ path)
+{
+	return nullptr;
 }
 
 WriteableBitmap^ WebPImage::DecodeFromByteArray(const Array<uint8> ^bytes)
@@ -117,7 +122,7 @@ WriteableBitmap ^ Unigram::Native::WebPImage::CreateWriteableBitmapFromWebPData(
 	};
 	if (!spDemuxer)
 	{
-		throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
+		//throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
 		return nullptr;
 	}
 
@@ -128,13 +133,15 @@ WriteableBitmap ^ Unigram::Native::WebPImage::CreateWriteableBitmapFromWebPData(
 		int ret = WebPInitDecoderConfig(&config);
 		if (!ret)
 		{
-			throw ref new FailureException(ref new String(L"WebPInitDecoderConfig failed"));
+			//throw ref new FailureException(ref new String(L"WebPInitDecoderConfig failed"));
+			return nullptr;
 		}
 
 		ret = (WebPGetFeatures(iter.fragment.bytes, iter.fragment.size, &config.input) == VP8_STATUS_OK);
 		if (!ret)
 		{
-			throw ref new FailureException(ref new String(L"WebPGetFeatures failed"));
+			//throw ref new FailureException(ref new String(L"WebPGetFeatures failed"));
+			return nullptr;
 		}
 
 		WriteableBitmap^ bitmap = ref new WriteableBitmap(iter.width, iter.height);
@@ -153,7 +160,8 @@ WriteableBitmap ^ Unigram::Native::WebPImage::CreateWriteableBitmapFromWebPData(
 
 		if (ret != VP8_STATUS_OK)
 		{
-			throw ref new FailureException(ref new String(L"Failed to decode frame"));
+			//throw ref new FailureException(ref new String(L"Failed to decode frame"));
+			return nullptr;
 		}
 
 		return bitmap;
@@ -178,7 +186,7 @@ IRandomAccessStream^ Unigram::Native::WebPImage::Encode(const Array<uint8> ^byte
 	};
 	if (!spDemuxer)
 	{
-		throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
+		//throw ref new InvalidArgumentException(ref new String(L"Failed to create demuxer"));
 		return nullptr;
 	}
 
@@ -189,21 +197,29 @@ IRandomAccessStream^ Unigram::Native::WebPImage::Encode(const Array<uint8> ^byte
 		int ret = WebPInitDecoderConfig(&config);
 		if (!ret)
 		{
-			throw ref new FailureException(ref new String(L"WebPInitDecoderConfig failed"));
+			//throw ref new FailureException(ref new String(L"WebPInitDecoderConfig failed"));
+			return nullptr;
 		}
 
 		ret = (WebPGetFeatures(iter.fragment.bytes, iter.fragment.size, &config.input) == VP8_STATUS_OK);
 		if (!ret)
 		{
-			throw ref new FailureException(ref new String(L"WebPGetFeatures failed"));
+			//throw ref new FailureException(ref new String(L"WebPGetFeatures failed"));
+			return nullptr;
 		}
 
-		auto ratioX = (double)256 / iter.width;
-		auto ratioY = (double)256 / iter.height;
-		auto ratio = std::min(ratioX, ratioY);
+		int width = iter.width;
+		int height = iter.height;
 
-		auto width = (int)(iter.width * ratio);
-		auto height = (int)(iter.height * ratio);
+		if (iter.width > 256 || iter.height > 256)
+		{
+			auto ratioX = (double)256 / iter.width;
+			auto ratioY = (double)256 / iter.height;
+			auto ratio = std::min(ratioX, ratioY);
+
+			width = (int)(iter.width * ratio);
+			height = (int)(iter.height * ratio);
+		}
 
 		uint8_t* pixels = new uint8_t[(width * 4) * height];
 
@@ -221,7 +237,8 @@ IRandomAccessStream^ Unigram::Native::WebPImage::Encode(const Array<uint8> ^byte
 
 		if (ret != VP8_STATUS_OK)
 		{
-			throw ref new FailureException(ref new String(L"Failed to decode frame"));
+			//throw ref new FailureException(ref new String(L"Failed to decode frame"));
+			return nullptr;
 		}
 
 		//return ref new Array<uint8>(vPixels.data(), vPixels.size());

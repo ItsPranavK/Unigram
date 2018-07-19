@@ -1,45 +1,25 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Views;
 using Unigram.Views.SignIn;
 using Windows.UI.Popups;
 using Windows.UI.Xaml.Navigation;
+using Unigram.Services;
 
 namespace Unigram.ViewModels.SignIn
 {
     public class SignUpViewModel : UnigramViewModelBase
     {
-        private string _phoneNumber;
-        private string _phoneCode;
-        private TLAuthSentCode _sentCode;
-
-        public SignUpViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator) 
-            : base(protoService, cacheService, aggregator)
+        public SignUpViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator) 
+            : base(protoService, cacheService, settingsService, aggregator)
         {
-        }
-
-        public override Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
-        {
-            var param = parameter as SignUpPage.NavigationParameters;
-            if (param != null)
-            {
-                _phoneNumber = param.PhoneNumber;
-                _phoneCode = param.PhoneCode;
-                _sentCode = param.Result;
-            }
-
-            return Task.CompletedTask;
+            SendCommand = new RelayCommand(SendExecute, () => !IsLoading);
         }
 
         private string _firstName;
@@ -68,46 +48,67 @@ namespace Unigram.ViewModels.SignIn
             }
         }
 
-        private RelayCommand _sendCommand;
-        public RelayCommand SendCommand => _sendCommand = _sendCommand ?? new RelayCommand(SendExecute, () => !IsLoading);
+        public RelayCommand SendCommand { get; }
         private async void SendExecute()
         {
-            if (_sentCode == null)
+            //if (_sentCode == null)
+            //{
+            //    //...
+            //    return;
+            //}
+
+            if (string.IsNullOrEmpty(_firstName))
             {
-                //...
+                RaisePropertyChanged("FIRSTNAME_INVALID");
                 return;
             }
 
-            var phoneNumber = _phoneNumber;
-            var phoneCodeHash = _sentCode.PhoneCodeHash;
+            await ProtoService.SendAsync(new SetOption("x_firstname", new OptionValueString(_firstName ?? string.Empty)));
+            await ProtoService.SendAsync(new SetOption("x_lastname", new OptionValueString(_lastName ?? string.Empty)));
 
-            IsLoading = true;
+            NavigationService.Navigate(typeof(SignInSentCodePage));
 
-            var response = await ProtoService.SignUpAsync(phoneNumber, phoneCodeHash, _phoneCode, _firstName, _lastName);
-            if (response.IsSucceeded)
-            {
-                ProtoService.SetInitState();
-                ProtoService.CurrentUserId = response.Result.User.Id;
-                SettingsHelper.IsAuthorized = true;
-                SettingsHelper.UserId = response.Result.User.Id;
+            //var phoneNumber = _phoneNumber;
+            //var phoneCodeHash = _sentCode.PhoneCodeHash;
 
-                // TODO: maybe ask about notifications?
+            //IsLoading = true;
 
-                NavigationService.Navigate(typeof(MainPage));
-            }
-            else if (response.Error != null)
-            {
-                IsLoading = false;
+            //var response = await LegacyService.SignUpAsync(phoneNumber, phoneCodeHash, _phoneCode, _firstName, _lastName);
+            //if (response.IsSucceeded)
+            //{
+            //    // TODO: maybe ask about notifications?
 
-                if (response.Error.TypeEquals(TLErrorType.PHONE_NUMBER_FLOOD))
-                {
-                    await TLMessageDialog.ShowAsync("Sorry, you have deleted and re-created your account too many times recently. Please wait for a few days before signing up again.", "Telegram", "OK");
-                }
-                else
-                {
-                    await new MessageDialog(response.Error.ErrorMessage ?? "Error message", response.Error.ErrorCode.ToString()).ShowQueuedAsync();
-                }
-            }
+            //    NavigationService.Navigate(typeof(MainPage));
+            //}
+            //else if (response.Error != null)
+            //{
+            //    IsLoading = false;
+
+            //    if (response.Error.TypeEquals(TLErrorType.PHONE_NUMBER_INVALID))
+            //    {
+            //        await TLMessageDialog.ShowAsync(Strings.Resources.InvalidPhoneNumber, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //    else if (response.Error.TypeEquals(TLErrorType.PHONE_CODE_EMPTY) || response.Error.TypeEquals(TLErrorType.PHONE_CODE_INVALID))
+            //    {
+            //        await TLMessageDialog.ShowAsync(Strings.Resources.InvalidCode, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //    else if (response.Error.TypeEquals(TLErrorType.PHONE_CODE_EXPIRED))
+            //    {
+            //        await TLMessageDialog.ShowAsync(Strings.Resources.CodeExpired, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //    else if (response.Error.TypeEquals(TLErrorType.FIRSTNAME_INVALID))
+            //    {
+            //        await TLMessageDialog.ShowAsync(Strings.Resources.InvalidFirstName, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //    else if (response.Error.TypeEquals(TLErrorType.LASTNAME_INVALID))
+            //    {
+            //        await TLMessageDialog.ShowAsync(Strings.Resources.InvalidLastName, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //    else
+            //    {
+            //        await TLMessageDialog.ShowAsync(response.Error.ErrorMessage, Strings.Resources.AppName, Strings.Resources.OK);
+            //    }
+            //}
         }
     }
 }

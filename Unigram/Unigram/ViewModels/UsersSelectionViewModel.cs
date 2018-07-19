@@ -1,18 +1,13 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
-using Template10.Services.NavigationService;
+using Telegram.Td.Api;
 using Unigram.Collections;
 using Unigram.Common;
-using Unigram.Views;
+using Unigram.Core.Common;
+using Unigram.Services;
+using Unigram.ViewModels.Supergroups;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
 
@@ -20,12 +15,15 @@ namespace Unigram.ViewModels
 {
     public abstract class UsersSelectionViewModel : UnigramViewModelBase
     {
-        public UsersSelectionViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator) 
-            : base(protoService, cacheService, aggregator)
+        public UsersSelectionViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator) 
+            : base(protoService, cacheService, settingsService, aggregator)
         {
-            Items = new SortedObservableCollection<TLUser>(new TLUserComparer(false));
-            SelectedItems = new ObservableCollection<TLUser>();
+            Items = new SortedObservableCollection<User>(new UserComparer(false));
+            SelectedItems = new MvxObservableCollection<User>();
             SelectedItems.CollectionChanged += OnCollectionChanged;
+
+            SendCommand = new RelayCommand(SendExecute, () => Minimum <= SelectedItems.Count && Maximum >= SelectedItems.Count);
+            SingleCommand = new RelayCommand<User>(SendExecute);
         }
 
         private void OnCollectionChanged(object sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -40,83 +38,70 @@ namespace Unigram.ViewModels
         public virtual int Maximum => 5000;
         public virtual int Minimum => 0;
 
-        public ListViewSelectionMode SelectionMode => Maximum > 1 ? ListViewSelectionMode.Extended : ListViewSelectionMode.None;
+        public ListViewSelectionMode SelectionMode => Maximum > 1 ? ListViewSelectionMode.Multiple : ListViewSelectionMode.None;
 
         public virtual bool AllowGlobalSearch => true;
 
-        protected virtual Func<TLUser, bool> Filter => null;
+        protected virtual Func<User, bool> Filter => null;
 
         #endregion
 
-        public override async Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
+        public override Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
         {
-            var contacts = CacheService.GetContacts();
-            foreach (var item in contacts.OfType<TLUser>())
+            Items.Clear();
+
+            ProtoService.Send(new SearchContacts(string.Empty, int.MaxValue), result =>
             {
-                var user = item as TLUser;
-                if (user.IsSelf)
+                if (result is Telegram.Td.Api.Users users)
                 {
-                    continue;
-                }
-
-                if (Filter != null)
-                {
-                    if (Filter(user))
+                    BeginOnUIThread(() =>
                     {
-                        Items.Add(user);
-                    }
-                }
-                else
-                {
-                    Items.Add(user);
-                }
-            }
-
-            var input = string.Join(",", contacts.Select(x => x.Id).Union(new[] { SettingsHelper.UserId }).OrderBy(x => x));
-            var hash = Utils.ComputeMD5(input);
-            var hex = BitConverter.ToString(hash).Replace("-", string.Empty).ToLower();
-
-            var response = await ProtoService.GetContactsAsync(hex);
-            if (response.IsSucceeded && response.Result is TLContactsContacts)
-            {
-                var result = response.Result as TLContactsContacts;
-                if (result != null)
-                {
-                    Items.Clear();
-
-                    foreach (var item in result.Users.OfType<TLUser>())
-                    {
-                        var user = item as TLUser;
-                        if (user.IsSelf)
+                        foreach (var id in users.UserIds)
                         {
-                            continue;
-                        }
-
-                        if (Filter != null)
-                        {
-                            if (Filter(user))
+                            var user = ProtoService.GetUser(id);
+                            if (user != null && Filter != null && Filter(user))
+                            {
+                                Items.Add(user);
+                            }
+                            else if (user != null)
                             {
                                 Items.Add(user);
                             }
                         }
-                        else
-                        {
-                            Items.Add(user);
-                        }
-                    }
+                    });
                 }
-            }
+            });
+
+            return Task.CompletedTask;
         }
 
-        public SortedObservableCollection<TLUser> Items { get; private set; }
+        public ObservableCollection<User> Items { get; protected set; }
 
-        public ObservableCollection<TLUser> SelectedItems { get; private set; }
+        public MvxObservableCollection<User> SelectedItems { get; private set; }
 
-        private RelayCommand _sendCommand;
-        public RelayCommand SendCommand => _sendCommand = _sendCommand ?? new RelayCommand(SendExecute, () => Minimum <= SelectedItems.Count && Maximum >= SelectedItems.Count);
+        public RelayCommand SendCommand { get; }
         protected virtual void SendExecute()
         {
 
+        }
+
+        public RelayCommand<User> SingleCommand { get; }
+        protected virtual void SendExecute(User user)
+        {
+
+        }
+
+        private SearchUsersCollection _search;
+        public SearchUsersCollection Search
+        {
+            get
+            {
+                return _search;
+            }
+            set
+            {
+                Set(ref _search, value);
+            }
         }
     }
 }

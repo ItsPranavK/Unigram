@@ -1,24 +1,15 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
-using Unigram.Common;
-using Unigram.Core.Services;
+﻿using Unigram.Common;
+using Unigram.Services;
+using Unigram.Services.Updates;
 
 namespace Unigram.ViewModels.Settings
 {
     public class SettingsGeneralViewModel : UnigramViewModelBase
     {
-        private IContactsService _contactsService;
+        private readonly IContactsService _contactsService;
 
-        public SettingsGeneralViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator, IContactsService contactsService)
-            : base(protoService, cacheService, aggregator)
+        public SettingsGeneralViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, IContactsService contactsService)
+            : base(protoService, cacheService, settingsService, aggregator)
         {
             _contactsService = contactsService;
         }
@@ -27,11 +18,11 @@ namespace Unigram.ViewModels.Settings
         {
             get
             {
-                return ApplicationSettings.Current.IsSendByEnterEnabled;
+                return Settings.IsSendByEnterEnabled;
             }
             set
             {
-                ApplicationSettings.Current.IsSendByEnterEnabled = value;
+                Settings.IsSendByEnterEnabled = value;
                 RaisePropertyChanged();
             }
         }
@@ -40,45 +31,45 @@ namespace Unigram.ViewModels.Settings
         {
             get
             {
-                return ApplicationSettings.Current.IsReplaceEmojiEnabled;
+                return Settings.IsReplaceEmojiEnabled;
             }
             set
             {
-                ApplicationSettings.Current.IsReplaceEmojiEnabled = value;
+                Settings.IsReplaceEmojiEnabled = value;
                 RaisePropertyChanged();
             }
         }
 
-        public bool IsContactsSyncEnabled
+        public bool IsAutoPlayEnabled
         {
             get
             {
-                return ApplicationSettings.Current.IsContactsSyncEnabled;
+                return Settings.IsAutoPlayEnabled;
             }
             set
             {
-                ApplicationSettings.Current.IsContactsSyncEnabled = value;
+                Settings.IsAutoPlayEnabled = value;
                 RaisePropertyChanged();
             }
         }
 
-        public override async void RaisePropertyChanged([CallerMemberName] string propertyName = null)
+        public bool IsWorkModeVisible
         {
-            base.RaisePropertyChanged(propertyName);
-
-            if (propertyName.Equals(nameof(IsContactsSyncEnabled)))
+            get
             {
-                if (IsContactsSyncEnabled)
-                {
-                    var contacts = CacheService.GetContacts();
-                    var response = new TLContactsContacts { Users = new TLVector<TLUserBase>(contacts) };
+                return Settings.IsWorkModeVisible;
+            }
+            set
+            {
+                Settings.IsWorkModeVisible = value;
+                RaisePropertyChanged();
 
-                    await _contactsService.SyncContactsAsync(response);
-                }
-                else
+                if (!value)
                 {
-                    await _contactsService.UnsyncContactsAsync();
+                    Settings.IsWorkModeEnabled = false;
                 }
+
+                Aggregator.Publish(new UpdateWorkMode(value, Settings.IsWorkModeEnabled));
             }
         }
     }

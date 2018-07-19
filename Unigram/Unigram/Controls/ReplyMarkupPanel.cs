@@ -1,10 +1,13 @@
-﻿using System;
+﻿using LinqToVisualTree;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Core.Services;
+using Unigram.ViewModels;
+using Unigram.Views;
 using Windows.UI.ViewManagement;
 using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
@@ -13,79 +16,88 @@ namespace Unigram.Controls
 {
     public class ReplyMarkupButtonClickEventArgs : EventArgs
     {
-        public ReplyMarkupButtonClickEventArgs(TLKeyboardButtonBase button)
+        public ReplyMarkupButtonClickEventArgs(KeyboardButton button)
         {
             Button = button;
         }
 
-        public TLKeyboardButtonBase Button { get; private set; }
+        public KeyboardButton Button { get; private set; }
+    }
+
+    public class ReplyMarkupInlineButtonClickEventArgs : EventArgs
+    {
+        public ReplyMarkupInlineButtonClickEventArgs(InlineKeyboardButton button)
+        {
+            Button = button;
+        }
+
+        public InlineKeyboardButton Button { get; private set; }
     }
 
     public class ReplyMarkupPanel : Grid
     {
-        private double _keyboardHeight = 300;
+        private double _keyboardHeight = 260;
 
-        #region ReplyMarkup
+        //#region ReplyMarkup
 
-        public TLReplyMarkupBase ReplyMarkup
-        {
-            get { return (TLReplyMarkupBase)GetValue(ReplyMarkupProperty); }
-            set { SetValue(ReplyMarkupProperty, value); }
-        }
+        //public TLReplyMarkupBase ReplyMarkup
+        //{
+        //    get { return (TLReplyMarkupBase)GetValue(ReplyMarkupProperty); }
+        //    set { SetValue(ReplyMarkupProperty, value); }
+        //}
 
-        public static readonly DependencyProperty ReplyMarkupProperty =
-            DependencyProperty.Register("ReplyMarkup", typeof(TLReplyMarkupBase), typeof(ReplyMarkupPanel), new PropertyMetadata(null, OnReplyMarkupChanged));
+        //public static readonly DependencyProperty ReplyMarkupProperty =
+        //    DependencyProperty.Register("ReplyMarkup", typeof(TLReplyMarkupBase), typeof(ReplyMarkupPanel), new PropertyMetadata(null, OnReplyMarkupChanged));
 
-        private static void OnReplyMarkupChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-        {
-            ((ReplyMarkupPanel)d).OnReplyMarkupChanged((TLReplyMarkupBase)e.NewValue, (TLReplyMarkupBase)e.OldValue);
-        }
+        //private static void OnReplyMarkupChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        //{
+        //    ((ReplyMarkupPanel)d).OnReplyMarkupChanged((TLReplyMarkupBase)e.NewValue, (TLReplyMarkupBase)e.OldValue);
+        //}
 
-        #endregion
+        //#endregion
 
         private void InputPane_Showing(InputPane sender, InputPaneVisibilityEventArgs args)
         {
             _keyboardHeight = args.OccludedRect.Height;
         }
 
-        private void UpdateSize()
+        private void UpdateSize(ReplyMarkup markup, bool inline)
         {
-            var inline = DataContext is TLMessage;
-            if (ReplyMarkup is TLReplyKeyboardMarkup && !inline && Parent is ScrollViewer scroll)
+            if (markup is ReplyMarkupShowKeyboard keyboard && !inline && Parent is ScrollViewer scroll)
             {
-                var keyboard = ReplyMarkup as TLReplyKeyboardMarkup;
-                if (keyboard.IsResize && double.IsNaN(Height))
+                if (keyboard.ResizeKeyboard)
                 {
-                    Height = double.NaN;
+                    scroll.Height = double.NaN;
                     scroll.MaxHeight = _keyboardHeight;
                 }
-                else if (keyboard.IsResize == false && double.IsNaN(Height) && Parent is ScrollViewer scroll1)
+                else
                 {
-                    Height = _keyboardHeight;
-                    scroll1.MaxHeight = double.PositiveInfinity;
+                    scroll.Height = _keyboardHeight;
+                    scroll.MaxHeight = _keyboardHeight;
                 }
             }
-            else if (ReplyMarkup is TLReplyKeyboardHide && !inline && Parent is ScrollViewer scroll2)
+            else if (markup is ReplyMarkupRemoveKeyboard && !inline && Parent is ScrollViewer scroll2)
             {
-                Height = double.NaN;
-                scroll2.MaxHeight = double.PositiveInfinity;
+                scroll2.Height = 0;
+                scroll2.MaxHeight = _keyboardHeight;
             }
         }
 
-        private void OnReplyMarkupChanged(TLReplyMarkupBase newValue, TLReplyMarkupBase oldValue)
+        public bool Update(MessageViewModel message, ReplyMarkup markup, bool inline = true)
         {
-            var inline = DataContext is TLMessage;
+            //var inline = Message is TLMessage;
+            //var inline = true;
             var resize = false;
 
-            TLVector<TLKeyboardButtonRow> rows = null;
-            if (newValue is TLReplyKeyboardMarkup keyboardMarkup && !inline)
+            List<List<object>> rows = null;
+            if (markup is ReplyMarkupShowKeyboard keyboardMarkup && !inline)
             {
-                rows = keyboardMarkup.Rows;
-                resize = keyboardMarkup.IsResize;
+                rows = keyboardMarkup.Rows.Select(x => x.Select(y => y as object).ToList()).ToList();
+                resize = keyboardMarkup.ResizeKeyboard;
             }
-            else if (newValue is TLReplyInlineMarkup inlineMarkup && inline)
+            else if (markup is ReplyMarkupInlineKeyboard inlineMarkup && inline)
             {
-                rows = inlineMarkup.Rows;
+                rows = inlineMarkup.Rows.Select(x => x.Select(y => y as object).ToList()).ToList();
 
                 //if (!double.IsNaN(Height))
                 //{
@@ -93,39 +105,17 @@ namespace Unigram.Controls
                 //}
             }
 
-            UpdateSize();
+            UpdateSize(markup, inline);
             Children.Clear();
             RowDefinitions.Clear();
 
             var receipt = false;
-            if (DataContext is TLMessage message && message.Media is TLMessageMediaInvoice invoiceMedia)
+            if (message != null && message.Content is MessageInvoice invoice)
             {
-                receipt = invoiceMedia.HasReceiptMsgId;
+                receipt = invoice.ReceiptMessageId != 0;
             }
 
-            //if (receipt)
-            //{
-            //    var panel = new Grid();
-            //    panel.HorizontalAlignment = HorizontalAlignment.Stretch;
-            //    panel.VerticalAlignment = VerticalAlignment.Stretch;
-            //    panel.Margin = new Thickness(-2, 0, -2, 0);
-
-            //    var button = new GlyphButton();
-            //    button.DataContext = new TLKeyboardButtonBuy();
-            //    button.Content = "Receipt";
-            //    button.Margin = new Thickness(2, 2, 2, 0);
-            //    button.HorizontalAlignment = HorizontalAlignment.Stretch;
-            //    button.VerticalAlignment = VerticalAlignment.Stretch;
-            //    button.Click += Button_Click;
-            //    button.Style = App.Current.Resources["ReplyInlineMarkupButtonStyle"] as Style;
-
-            //    panel.Children.Add(button);
-            //    Children.Add(panel);
-
-            //    return;
-            //}
-
-            if (rows != null && ((inline && newValue is TLReplyInlineMarkup) || (!inline && newValue is TLReplyKeyboardMarkup)))
+            if (rows != null && ((inline && markup is ReplyMarkupInlineKeyboard) || (!inline && markup is ReplyMarkupShowKeyboard)))
             {
                 for (int j = 0; j < rows.Count; j++)
                 {
@@ -134,14 +124,13 @@ namespace Unigram.Controls
                     var panel = new Grid();
                     panel.HorizontalAlignment = HorizontalAlignment.Stretch;
                     panel.VerticalAlignment = VerticalAlignment.Stretch;
-                    panel.Margin = new Thickness(-2, 0, -2, 0);
+                    panel.Margin = new Thickness(-1, 0, -1, 0);
 
-                    for (int i = 0; i < row.Buttons.Count; i++)
+                    for (int i = 0; i < row.Count; i++)
                     {
                         var button = new GlyphButton();
-                        button.DataContext = row.Buttons[i];
-                        button.Content = row.Buttons[i].Text;
-                        button.Margin = new Thickness(2, 2, 2, j == rows.Count - 1 ? 0 : 2);
+                        button.DataContext = row[i];
+                        button.Margin = new Thickness(1, 2, 1, 0);
                         button.HorizontalAlignment = HorizontalAlignment.Stretch;
                         button.VerticalAlignment = VerticalAlignment.Stretch;
                         button.Click += Button_Click;
@@ -155,47 +144,74 @@ namespace Unigram.Controls
                             button.Style = App.Current.Resources["ReplyKeyboardMarkupButtonStyle"] as Style;
                         }
 
-                        if (row.Buttons[i] is TLKeyboardButtonUrl)
+                        if (row[i] is InlineKeyboardButton inlineButton)
                         {
-                            button.Glyph = "\uE143";
+                            button.Content = inlineButton.Text;
+
+                            if (inlineButton.Type is InlineKeyboardButtonTypeUrl)
+                            {
+                                button.Glyph = "\uE143";
+                            }
+                            else if (inlineButton.Type is InlineKeyboardButtonTypeSwitchInline)
+                            {
+                                button.Glyph = "\uEE35";
+                            }
+                            // TODO: ku fu???
+                            //else if (row[i] is TLKeyboardButton && inline)
+                            //{
+                            //    button.Glyph = "\uE15F";
+                            //}
+                            else if (inlineButton.Type is InlineKeyboardButtonTypeBuy && receipt)
+                            {
+                                button.Content = Strings.Resources.PaymentReceipt;
+                            }
                         }
-                        else if (row.Buttons[i] is TLKeyboardButtonSwitchInline)
+                        else if (row[i] is KeyboardButton keyboardButton)
                         {
-                            button.Glyph = "\uEE35";
-                        }
-                        else if (row.Buttons[i] is TLKeyboardButton && inline)
-                        {
-                            button.Glyph = "\uE15F";
-                        }
-                        else if (row.Buttons[i] is TLKeyboardButtonBuy && receipt)
-                        {
-                            button.Content = "Receipt";
+                            button.Content = keyboardButton.Text;
                         }
 
-                        Grid.SetColumn(button, i);
+                        SetColumn(button, i);
 
                         panel.ColumnDefinitions.Add(new ColumnDefinition());
                         panel.Children.Add(button);
                     }
 
-                    Grid.SetRow(panel, j);
+                    SetRow(panel, j);
 
                     RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, resize ? GridUnitType.Auto : GridUnitType.Star) });
                     Children.Add(panel);
                 }
+
+                if (Children.Count > 0 && !inline)
+                {
+                    Padding = new Thickness(0, 0, 0, 4);
+                    return true;
+                }
+                else if (!inline)
+                {
+                    Padding = new Thickness();
+                    return false;
+                }
             }
+
+            return false;
         }
 
         private void Button_Click(object sender, RoutedEventArgs e)
         {
             var button = sender as Button;
-            var btn = button.DataContext as TLKeyboardButtonBase;
-            if (btn != null)
+            if (button.DataContext is KeyboardButton btn)
             {
                 ButtonClick?.Invoke(this, new ReplyMarkupButtonClickEventArgs(btn));
+            }
+            else if (button.DataContext is InlineKeyboardButton inlineBtn)
+            {
+                InlineButtonClick?.Invoke(this, new ReplyMarkupInlineButtonClickEventArgs(inlineBtn));
             }
         }
 
         public event EventHandler<ReplyMarkupButtonClickEventArgs> ButtonClick;
+        public event EventHandler<ReplyMarkupInlineButtonClickEventArgs> InlineButtonClick;
     }
 }

@@ -19,8 +19,39 @@ namespace Unigram.Controls
         {
             DefaultStyleKey = typeof(SearchTextBox);
 
-            DataContextChanged += OnDataContextChanged;
+            //DataContextChanged += OnDataContextChanged;
             TextChanged += OnTextChanged;
+        }
+
+        public event RoutedEventHandler Clean;
+
+        protected override void OnApplyTemplate()
+        {
+            var clean = GetTemplateChild("CleanButton") as Button;
+            if (clean != null)
+            {
+                clean.Click += Clean_Click;
+                clean.Click += Clean;
+            }
+
+            var search = GetTemplateChild("SearchButton") as Button;
+            if (search != null)
+            {
+                search.Click += Search_Click;
+            }
+
+            base.OnApplyTemplate();
+        }
+
+        private void Clean_Click(object sender, RoutedEventArgs e)
+        {
+            Text = string.Empty;
+            Focus(FocusState.Keyboard);
+        }
+
+        private void Search_Click(object sender, RoutedEventArgs e)
+        {
+            Focus(FocusState.Keyboard);
         }
 
         private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
@@ -36,7 +67,9 @@ namespace Unigram.Controls
             if (string.IsNullOrWhiteSpace(Text) == false)
             {
                 e.Handled = true;
+
                 Text = string.Empty;
+                Focus(FocusState.Keyboard);
             }
         }
 
@@ -46,20 +79,25 @@ namespace Unigram.Controls
 
             if (string.IsNullOrWhiteSpace(Text))
             {
+                VisualStateManager.GoToState(this, "ButtonCollapsed1", false);
                 SearchCommand?.Execute(null);
             }
-        }
-
-        protected override void OnKeyDown(KeyRoutedEventArgs e)
-        {
-            if (e.Key == Windows.System.VirtualKey.Enter)
+            else
             {
-                GetBindingExpression(TextProperty)?.UpdateSource();
-                SearchCommand?.Execute(null);
+                VisualStateManager.GoToState(this, "ButtonVisible1", false);
             }
-
-            base.OnKeyDown(e);
         }
+
+        //protected override void OnKeyDown(KeyRoutedEventArgs e)
+        //{
+        //    if (e.Key == Windows.System.VirtualKey.Enter)
+        //    {
+        //        GetBindingExpression(TextProperty)?.UpdateSource();
+        //        SearchCommand?.Execute(null);
+        //    }
+
+        //    base.OnKeyDown(e);
+        //}
 
         #region SearchCommand
         public ICommand SearchCommand

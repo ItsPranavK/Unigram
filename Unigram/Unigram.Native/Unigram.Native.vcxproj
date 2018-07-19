@@ -46,7 +46,7 @@
     <MinimumVisualStudioVersion>14.0</MinimumVisualStudioVersion>
     <AppContainerApplication>true</AppContainerApplication>
     <ApplicationType>Windows Store</ApplicationType>
-    <WindowsTargetPlatformVersion>10.0.15063.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion>10.0.17134.0</WindowsTargetPlatformVersion>
     <WindowsTargetPlatformMinVersion>10.0.14393.0</WindowsTargetPlatformMinVersion>
     <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
     <ProjectName>Unigram.Native</ProjectName>
@@ -244,6 +244,9 @@
     <ClInclude Include="BufferLock.h" />
     <ClInclude Include="ByteStreamHandler.h" />
     <ClInclude Include="DeviceLostHelper.h" />
+    <ClInclude Include="EmojiSuggestion.h" />
+    <ClInclude Include="emoji_suggestions.h" />
+    <ClInclude Include="emoji_suggestions_data.h" />
     <ClInclude Include="FinalizeAsyncOperation.h" />
     <ClInclude Include="MediaFoundationExtensions.h" />
     <ClInclude Include="MediaSink.h" />
@@ -256,7 +259,7 @@
     <ClInclude Include="Opus\OpusMediaSource.h" />
     <ClInclude Include="Opus\OpusMediaType.h" />
     <ClInclude Include="Opus\OpusOutputByteStream.h" />
-    <ClInclude Include="PlaceholderImageSource.h" />
+    <ClInclude Include="PlaceholderImageHelper.h" />
     <ClInclude Include="MediaCapturePreview.h" />
     <ClInclude Include="WebP\DemuxerWrapper.h" />
     <ClInclude Include="GIF\GIFByteStreamHandler.h" />
@@ -276,6 +279,9 @@
     <ClCompile Include="BufferLock.cpp" />
     <ClCompile Include="ByteStreamHandler.cpp" />
     <ClCompile Include="DeviceLostHelper.cpp" />
+    <ClCompile Include="EmojiSuggestion.cpp" />
+    <ClCompile Include="emoji_suggestions.cpp" />
+    <ClCompile Include="emoji_suggestions_data.cpp" />
     <ClCompile Include="FinalizeAsyncOperation.cpp" />
     <ClCompile Include="GIF\GIFByteStreamHandler.cpp" />
     <ClCompile Include="GIF\GIFMediaSource.cpp" />
@@ -300,7 +306,7 @@
     <ClCompile Include="AnimatedImageSource\AnimatedImageSourceRenderer.cpp" />
     <ClCompile Include="AnimatedImageSource\AnimatedImageSourceRendererFactory.cpp" />
     <ClCompile Include="AnimatedImageSource\FramesCacheStore.cpp" />
-    <ClCompile Include="PlaceholderImageSource.cpp" />
+    <ClCompile Include="PlaceholderImageHelper.cpp" />
     <ClCompile Include="MediaCapturePreview.cpp" />
     <ClCompile Include="WebP\WebPFrame.cpp" />
     <ClCompile Include="WebP\WebPImage.cpp" />

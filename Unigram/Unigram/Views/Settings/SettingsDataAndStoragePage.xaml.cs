@@ -1,8 +1,12 @@
-﻿using System;
+﻿using libtgvoip;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
+using Telegram.Td.Api;
+using Unigram.Common;
+using Unigram.Controls.Views;
 using Unigram.ViewModels.Settings;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
@@ -23,7 +27,7 @@ namespace Unigram.Views.Settings
         public SettingsDataAndStoragePage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<SettingsDataAndStorageViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<SettingsDataAndStorageViewModel>();
         }
 
         private void Storage_Click(object sender, RoutedEventArgs e)
@@ -35,5 +39,28 @@ namespace Unigram.Views.Settings
         {
             Frame.Navigate(typeof(SettingsStatsPage));
         }
+
+        private void Proxy_Click(object sender, RoutedEventArgs e)
+        {
+            Frame.Navigate(typeof(SettingsProxiesPage));
+        }
+
+        #region Binding
+
+        private string ConvertUseLessData(DataSavingMode value)
+        {
+            switch (value)
+            {
+                default:
+                case DataSavingMode.Never:
+                    return Strings.Resources.UseLessDataNever;
+                case DataSavingMode.MobileOnly:
+                    return Strings.Resources.UseLessDataOnMobile;
+                case DataSavingMode.Always:
+                    return Strings.Resources.UseLessDataAlways;
+            }
+        }
+
+        #endregion
     }
 }

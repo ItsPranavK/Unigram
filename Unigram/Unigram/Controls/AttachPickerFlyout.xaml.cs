@@ -4,6 +4,9 @@ using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
 using Unigram.Core.Models;
+using Unigram.Entities;
+using Unigram.ViewModels;
+using Unigram.Views;
 using Windows.Devices.Enumeration;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
@@ -17,18 +20,17 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
-// The User Control item template is documented at http://go.microsoft.com/fwlink/?LinkId=234236
-
 namespace Unigram.Controls
 {
     public sealed partial class AttachPickerFlyout : UserControl
     {
+        public DialogViewModel ViewModel => DataContext as DialogViewModel;
+
         public AttachPickerFlyout()
         {
             InitializeComponent();
 
-            Loaded += OnLoaded;
-            Unloaded += OnUnloaded;
+            Library.ItemsSource = MediaLibraryCollection.GetForCurrentView();
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)
@@ -49,13 +51,14 @@ namespace Unigram.Controls
 
         private void UpdateView(double width)
         {
-            Library.MaxWidth = width < 500 ? width - 16 : 360;
+            //Library.MaxWidth = width < 500 ? width - 16 - 2 : 360;
+            Library.MaxWidth = width < 500 ? width - 16 - 2 : 360;
             Library.MinWidth = Library.MaxWidth;
         }
 
         private void Library_ItemClick(object sender, ItemClickEventArgs e)
         {
-            ItemClick?.Invoke(this, new MediaSelectedEventArgs((StoragePhoto)e.ClickedItem));
+            ItemClick?.Invoke(this, new MediaSelectedEventArgs((StorageMedia)e.ClickedItem, true));
         }
 
         private async void Camera_Click(object sender, RoutedEventArgs e)
@@ -67,11 +70,19 @@ namespace Unigram.Controls
             capture.VideoSettings.Format = CameraCaptureUIVideoFormat.Mp4;
             capture.VideoSettings.MaxResolution = CameraCaptureUIMaxVideoResolution.StandardDefinition;
 
-            var result = await capture.CaptureFileAsync(CameraCaptureUIMode.Photo /*OrVideo*/);
-            if (result != null)
+            var file = await capture.CaptureFileAsync(CameraCaptureUIMode.PhotoOrVideo);
+            if (file != null)
             {
-                await result.CopyAsync(KnownFolders.CameraRoll, DateTime.Now.ToString("WIN_yyyyMMdd_HH_mm_ss") + ".jpg", NameCollisionOption.GenerateUniqueName);
-                ItemClick?.Invoke(this, new MediaSelectedEventArgs(new StoragePhoto(result)));
+                if (file.ContentType.Equals("video/mp4"))
+                {
+                    await file.CopyAsync(KnownFolders.CameraRoll, DateTime.Now.ToString("WIN_yyyyMMdd_HH_mm_ss") + ".mp4", NameCollisionOption.GenerateUniqueName);
+                    ItemClick?.Invoke(this, new MediaSelectedEventArgs(await StorageVideo.CreateAsync(file, true), false));
+                }
+                else
+                {
+                    await file.CopyAsync(KnownFolders.CameraRoll, DateTime.Now.ToString("WIN_yyyyMMdd_HH_mm_ss") + ".jpg", NameCollisionOption.GenerateUniqueName);
+                    ItemClick?.Invoke(this, new MediaSelectedEventArgs(await StoragePhoto.CreateAsync(file, true), false));
+                }
             }
         }
 
@@ -80,11 +91,14 @@ namespace Unigram.Controls
 
     public class MediaSelectedEventArgs
     {
-        public StoragePhoto Item { get; private set; }
+        public StorageMedia Item { get; private set; }
 
-        public MediaSelectedEventArgs(StoragePhoto item)
+        public bool IsLocal { get; private set; }
+
+        public MediaSelectedEventArgs(StorageMedia item, bool local)
         {
             Item = item;
+            IsLocal = local;
         }
     }
 }

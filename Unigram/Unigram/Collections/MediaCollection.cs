@@ -3,25 +3,25 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Common;
+using Unigram.Services;
 
 namespace Unigram.Collections
 {
-    public class MediaCollection : IncrementalCollection<KeyedList<DateTime, TLMessage>>
+    public class MediaCollection : IncrementalCollection<KeyedList<DateTime, Message>>
     {
-        private readonly IMTProtoService _protoService;
-        private readonly TLMessagesFilterBase _filter;
-        private readonly TLInputPeerBase _peer;
+        private readonly IProtoService _protoService;
+        private readonly SearchMessagesFilter _filter;
+        private readonly long _chatId;
 
-        private int _lastMaxId;
+        private long _lastMaxId;
+        private bool _hasMore;
 
-        public MediaCollection(IMTProtoService protoService, TLInputPeerBase peer, TLMessagesFilterBase filter)
+        public MediaCollection(IProtoService protoService, long chatId, SearchMessagesFilter filter)
         {
             _protoService = protoService;
-            _peer = peer;
+            _chatId = chatId;
             _filter = filter;
         }
 
@@ -47,47 +47,64 @@ namespace Unigram.Collections
             }
         }
 
-        public override async Task<IList<KeyedList<DateTime, TLMessage>>> LoadDataAsync()
+        public override async Task<IList<KeyedList<DateTime, Message>>> LoadDataAsync()
         {
             try
             {
-                var result = await _protoService.SearchAsync(_peer, _query, _filter, 0, 0, 0, _lastMaxId, 50);
-                if (result.IsSucceeded)
+                var response = await _protoService.SendAsync(new SearchChatMessages(_chatId, _query, 0, _lastMaxId, 0, 50, _filter));
+                if (response is Messages messages)
                 {
-                    if (result.Result.Messages.Count > 0)
+                    if (messages.MessagesValue.Count > 0)
                     {
-                        _lastMaxId = result.Result.Messages.Min(x => x.Id);
+                        _lastMaxId = messages.MessagesValue.Min(x => x.Id);
+                        _hasMore = true;
+                    }
+                    else
+                    {
+                        _hasMore = false;
                     }
 
-                    return result.Result.Messages.OfType<TLMessage>().GroupBy(x =>
+                    return messages.MessagesValue.GroupBy(x =>
                     {
-                        var clientDelta = MTProtoService.Current.ClientTicksDelta;
-                        var utc0SecsLong = x.Date * 4294967296 - clientDelta;
-                        var utc0SecsInt = utc0SecsLong / 4294967296.0;
-                        var dateTime = Utils.UnixTimestampToDateTime(utc0SecsInt);
-
+                        var dateTime = Utils.UnixTimestampToDateTime(x.Date);
                         return new DateTime(dateTime.Year, dateTime.Month, 1);
 
-                    }).Select(x => new KeyedList<DateTime, TLMessage>(x)).ToList();
+                    }).Select(x => new KeyedList<DateTime, Message>(x)).ToList();
                 }
             }
             catch { }
 
-            return new KeyedList<DateTime, TLMessage>[0];
+            return new KeyedList<DateTime, Message>[0];
         }
 
-        protected override void Merge(IList<KeyedList<DateTime, TLMessage>> result)
+        protected override bool GetHasMoreItems()
         {
+            return _hasMore;
+        }
+
+        protected override void Merge(IList<KeyedList<DateTime, Message>> result)
+        {
+            base.Merge(result);
+            return;
+
             var last = this.LastOrDefault();
+            if (last == null)
+            {
+                Add(new KeyedList<DateTime, Message>(DateTime.Now));
+            }
 
             foreach (var group in result)
             {
                 if (last != null && last.Key.Date == group.Key.Date)
                 {
+                    //last.AddRange(group);
+
                     foreach (var item in group)
                     {
                         last.Add(item);
                     }
+
+                    last.Update();
                 }
                 else
                 {

@@ -1,24 +1,24 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls.Views;
-using Unigram.Views;
+using Unigram.Services;
 
 namespace Unigram.ViewModels
 {
     public class InstantViewModel : UnigramViewModelBase
     {
-        public InstantViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator) 
-            : base(protoService, cacheService, aggregator)
+        public InstantViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator) 
+            : base(protoService, cacheService, settingsService, aggregator)
         {
-            _gallery = new InstantGalleryViewModel();
+            _gallery = new InstantGalleryViewModel(aggregator);
+
+            ShareCommand = new RelayCommand(ShareExecute);
+            FeedbackCommand = new RelayCommand(FeedbackExecute);
         }
 
         public Uri ShareLink { get; set; }
@@ -37,53 +37,22 @@ namespace Unigram.ViewModels
             }
         }
 
-        public RelayCommand<TLChannel> ChannelOpenCommand => new RelayCommand<TLChannel>(ChannelOpenExecute);
-        private void ChannelOpenExecute(TLChannel channel)
-        {
-            if (channel != null)
-            {
-                NavigationService.Navigate(typeof(DialogPage), channel.ToPeer());
-            }
-        }
-
-        public RelayCommand<TLChannel> ChannelJoinCommand => new RelayCommand<TLChannel>(ChannelJoinExecute);
-        private async void ChannelJoinExecute(TLChannel channel)
-        {
-            if (channel != null && channel.IsLeft)
-            {
-                var response = await ProtoService.JoinChannelAsync(channel);
-                if (response.IsSucceeded)
-                {
-                    channel.RaisePropertyChanged(() => channel.IsLeft);
-                }
-            }
-        }
-
-        public RelayCommand ShareCommand => new RelayCommand(ShareExecute);
+        public RelayCommand ShareCommand { get; }
         private async void ShareExecute()
         {
             if (ShareLink != null)
             {
-                await ShareView.Current.ShowAsync(ShareLink, ShareTitle);
+                await ShareView.GetForCurrentView().ShowAsync(ShareLink, ShareTitle);
             }
         }
 
-        public RelayCommand FeedbackCommand => new RelayCommand(FeedbackExecute);
+        public RelayCommand FeedbackCommand { get; }
         private async void FeedbackExecute()
         {
-            var user = CacheService.GetUser("previews");
-            if (user == null)
+            var response = await ProtoService.SendAsync(new SearchPublicChat("previews"));
+            if (response is Chat chat)
             {
-                var response = await ProtoService.ResolveUsernameAsync("previews");
-                if (response.IsSucceeded)
-                {
-                    user = response.Result.Users.FirstOrDefault();
-                }
-            }
-
-            if (user != null)
-            {
-                NavigationService.Navigate(typeof(DialogPage), user.ToPeer());
+                NavigationService.NavigateToChat(chat);
             }
         }
     }

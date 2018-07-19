@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
+using Unigram.Common;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
 using Windows.UI.Xaml;
@@ -13,15 +14,20 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
-// The Content Dialog item template is documented at http://go.microsoft.com/fwlink/?LinkId=234238
-
 namespace Unigram.Controls.Views
 {
     public sealed partial class DeleteChannelMessageDialog : ContentDialog
     {
-        public DeleteChannelMessageDialog()
+        public DeleteChannelMessageDialog(int count, string fullName)
         {
             this.InitializeComponent();
+
+            Title = Strings.Resources.Message;
+            PrimaryButtonText = Strings.Resources.OK;
+            SecondaryButtonText = Strings.Resources.Cancel;
+
+            Message.Text = string.Format(Strings.Resources.AreYouSureDeleteMessages, Locale.Declension("Messages", count));
+            DeleteAllCheck.Content = string.Format(Strings.Resources.DeleteAllFrom, fullName ?? string.Empty);
         }
 
         public bool BanUser

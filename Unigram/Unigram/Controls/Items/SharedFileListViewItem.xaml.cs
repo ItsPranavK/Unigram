@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
+using Unigram.Converters;
+using Unigram.Services;
+using Unigram.ViewModels;
+using Unigram.ViewModels.Delegates;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
 using Windows.UI.Xaml;
@@ -17,47 +18,83 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
-// The User Control item template is documented at http://go.microsoft.com/fwlink/?LinkId=234236
-
 namespace Unigram.Controls.Items
 {
     public sealed partial class SharedFileListViewItem : UserControl
     {
-        public TLMessage ViewModel => DataContext as TLMessage;
-        private TLMessage _oldViewModel;
+        private IProtoService _protoService;
+        private IMessageDelegate _delegate;
+        private Message _message;
 
         public SharedFileListViewItem()
         {
             InitializeComponent();
-
-            DataContextChanged += OnDataContextChanged;
         }
 
-        private void OnDataContextChanged(FrameworkElement sender, DataContextChangedEventArgs args)
+        public void UpdateMessage(IProtoService protoService, IMessageDelegate delegato, Message message)
         {
-            if (_oldViewModel != null)
+            _protoService = protoService;
+            _delegate = delegato;
+            _message = message;
+
+            var document = message.Content as MessageDocument;
+            if (document == null)
             {
-                //_oldViewModel.PropertyChanged -= OnPropertyChanged;
-                _oldViewModel = null;
+                return;
             }
 
-            if (ViewModel != null)
-            {
-                _oldViewModel = ViewModel;
-                //ViewModel.PropertyChanged += OnPropertyChanged;
+            Ellipse.Background = UpdateEllipseBrush(document.Document);
+            Title.Text = document.Document.FileName;
 
-                // To semplify future x:Bind implementation.
-                EllipseIcon.Background = UpdateEllipseBrush(ViewModel);
-                TimeLabel.Text = UpdateTimeLabel(ViewModel);
-                SizeLabel.Text = UpdateSizeLabel(ViewModel);
+            UpdateFile(message, document.Document.DocumentValue);
+        }
+
+        public void UpdateFile(Message message, File file)
+        {
+            var document = message.Content as MessageDocument;
+            if (document == null)
+            {
+                return;
+            }
+
+            if (document.Document.DocumentValue.Id != file.Id)
+            {
+                return;
+            }
+
+            var size = Math.Max(file.Size, file.ExpectedSize);
+            if (file.Local.IsDownloadingActive)
+            {
+                Button.Glyph = "\uE10A";
+                Button.Progress = (double)file.Local.DownloadedSize / size;
+
+                Subtitle.Text = string.Format("{0} / {1}", FileSizeConverter.Convert(file.Local.DownloadedSize, size), FileSizeConverter.Convert(size));
+            }
+            else if (file.Remote.IsUploadingActive)
+            {
+
+                Button.Glyph = "\uE10A";
+                Button.Progress = (double)file.Remote.UploadedSize / size;
+
+                Subtitle.Text = string.Format("{0} / {1}", FileSizeConverter.Convert(file.Remote.UploadedSize, size), FileSizeConverter.Convert(size));
+            }
+            else if (file.Local.CanBeDownloaded && !file.Local.IsDownloadingCompleted)
+            {
+                Button.Glyph = "\uE118";
+                Button.Progress = 0;
+
+                Subtitle.Text = FileSizeConverter.Convert(size) + " — " + UpdateTimeLabel(message);
+            }
+            else
+            {
+                Button.Glyph = "\uE160";
+                Button.Progress = 1;
+
+                Subtitle.Text = FileSizeConverter.Convert(size) + " — " + UpdateTimeLabel(message);
             }
         }
 
-        private void OnPropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
-        {
-        }
-
-        private Brush UpdateEllipseBrush(TLMessage message)
+        private Brush UpdateEllipseBrush(Document document)
         {
             var brushes = new[]
             {
@@ -67,19 +104,12 @@ namespace Unigram.Controls.Items
                 App.Current.Resources["Placeholder3Brush"]
             };
 
-            var mediaDocument = message.Media as TLMessageMediaDocument;
-            if (mediaDocument == null)
-            {
-                return brushes[0] as SolidColorBrush;
-            }
-
-            var document = mediaDocument.Document as TLDocument;
             if (document == null)
             {
                 return brushes[0] as SolidColorBrush;
             }
 
-            var name = document.FileName.ToString();
+            var name = document.FileName.ToLower();
             if (name.Length > 0)
             {
                 var color = -1;
@@ -119,55 +149,32 @@ namespace Unigram.Controls.Items
             return brushes[0] as SolidColorBrush;
         }
 
-        private string UpdateSizeLabel(TLMessage message)
+        private string UpdateTimeLabel(Message message)
         {
-            var mediaDocument = message.Media as TLMessageMediaDocument;
-            if (mediaDocument == null)
-            {
-                return "0 B";
-            }
-
-            var document = mediaDocument.Document as TLDocument;
-            if (document == null)
-            {
-                return "0 B";
-            }
-
-            var bytesCount = document.Size;
-            if (bytesCount < 1024)
-            {
-                return string.Format("{0} B", bytesCount);
-            }
-
-            if (bytesCount < 1024 * 1024)
-            {
-                return string.Format("{0} KB", ((double)bytesCount / 1024).ToString("0.0", CultureInfo.InvariantCulture));
-            }
-
-            if (bytesCount < 1024 * 1024 * 1024)
-            {
-                return string.Format("{0} MB", ((double)bytesCount / 1024 / 1024).ToString("0.0", CultureInfo.InvariantCulture));
-            }
-
-            return string.Format("{0} GB", ((double)bytesCount / 1024 / 1024 / 1024).ToString("0.0", CultureInfo.InvariantCulture));
+            return BindConvert.Current.BannedUntil(message.Date);
         }
 
-        private string UpdateTimeLabel(TLMessage message)
+        private void Button_Click(object sender, RoutedEventArgs e)
         {
-            var clientDelta = MTProtoService.Current.ClientTicksDelta;
-            var utc0SecsLong = message.Date * 4294967296 - clientDelta;
-            var utc0SecsInt = utc0SecsLong / 4294967296.0;
-            var dateTime = Utils.UnixTimestampToDateTime(utc0SecsInt);
-
-            var cultureInfo = (CultureInfo)CultureInfo.CurrentUICulture.Clone();
-            var shortTimePattern = Utils.GetShortTimePattern(ref cultureInfo);
-
-            if (dateTime.Year == DateTime.Now.Year)
+            var document = _message?.Content as MessageDocument;
+            if (document == null)
             {
-                return string.Format($"{{0:dd MMM}} at {{0:{shortTimePattern}}}", dateTime);
+                return;
             }
 
-            return string.Format($"{{0:dd MMM yyyy}} at {{0:{shortTimePattern}}}", dateTime);
+            var file = document.Document.DocumentValue;
+            if (file.Local.IsDownloadingActive)
+            {
+                _protoService.Send(new CancelDownloadFile(file.Id, false));
+            }
+            else if (file.Local.CanBeDownloaded && !file.Local.IsDownloadingActive && !file.Local.IsDownloadingCompleted)
+            {
+                _protoService.Send(new DownloadFile(file.Id, 1));
+            }
+            else
+            {
+                _delegate.OpenFile(file);
+            }
         }
     }
 }

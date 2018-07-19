@@ -3,9 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api;
-using Telegram.Api.Helpers;
-using Telegram.Api.TL;
 
 namespace Unigram.ViewModels
 {
@@ -71,7 +68,7 @@ namespace Unigram.ViewModels
         //        user.BotInfo = userFull.BotInfo;
         //        //user.About = userFull.About;
 
-        //        Execute.BeginOnUIThread(() =>
+        //        Dispatch(() =>
         //        {
         //            RaisePropertyChanged(() => HasBots);
         //            RaisePropertyChanged(() => With);
@@ -80,24 +77,24 @@ namespace Unigram.ViewModels
         //    }
         //}
 
-        private TLUser GetBot(TLMessage message)
-        {
-            var user = With as TLUser;
-            if (user == null || !user.IsBot)
-            {
-                user = (message.ViaBot as TLUser);
-            }
+        //private TLUser GetBot(TLMessage message)
+        //{
+        //    var user = With as TLUser;
+        //    if (user == null || !user.IsBot)
+        //    {
+        //        user = (message.ViaBot as TLUser);
+        //    }
 
-            if (user == null || !user.IsBot)
-            {
-                var tLMessage = message as TLMessage;
-                if (tLMessage != null)
-                {
-                    user = (tLMessage.From as TLUser);
-                }
-            }
+        //    if (user == null || !user.IsBot)
+        //    {
+        //        var tLMessage = message as TLMessage;
+        //        if (tLMessage != null)
+        //        {
+        //            user = (tLMessage.From as TLUser);
+        //        }
+        //    }
 
-            return user;
-        }
+        //    return user;
+        //}
     }
 }

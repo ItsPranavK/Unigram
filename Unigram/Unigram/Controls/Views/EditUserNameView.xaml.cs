@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
+using System.Threading.Tasks;
+using Unigram.Common;
 using Windows.Foundation;
 using Windows.Foundation.Collections;
 using Windows.UI.Xaml;
@@ -13,15 +15,29 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 
-// The Content Dialog item template is documented at https://go.microsoft.com/fwlink/?LinkId=234238
-
 namespace Unigram.Controls.Views
 {
     public sealed partial class EditUserNameView : ContentDialog
     {
-        private EditUserNameView()
+        public EditUserNameView()
         {
             InitializeComponent();
+
+            Title = Strings.Resources.EditName;
+            PrimaryButtonText = Strings.Resources.OK;
+            SecondaryButtonText = Strings.Resources.Cancel;
+        }
+
+        public EditUserNameView(string firstName, string lastName)
+        {
+            InitializeComponent();
+
+            FirstName = firstName;
+            LastName = lastName;
+
+            Title = Strings.Resources.EditName;
+            PrimaryButtonText = Strings.Resources.OK;
+            SecondaryButtonText = Strings.Resources.Cancel;
         }
 
         public string FirstName
@@ -58,24 +74,12 @@ namespace Unigram.Controls.Views
             }
         }
 
-        private static EditUserNameView _current;
-        public static EditUserNameView Current
-        {
-            get
-            {
-                if (_current == null)
-                    _current = new EditUserNameView();
-
-                return _current;
-            }
-        }
-
-        public IAsyncOperation<ContentDialogResult> ShowAsync(string firstName, string lastName)
+        public Task<ContentDialogResult> ShowAsync(string firstName, string lastName)
         {
             FirstName = firstName;
             LastName = lastName;
 
-            return ShowAsync();
+            return this.ShowQueuedAsync();
         }
 
         private void ContentDialog_PrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)

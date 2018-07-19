@@ -1,48 +1,65 @@
-﻿using System;
-using System.Diagnostics;
+﻿using Microsoft.HockeyApp;
+using Mono.Options;
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
-using Microsoft.HockeyApp;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.Services.Updates;
+using Telegram.Td.Api;
 using Template10.Common;
+using Template10.Services.NavigationService;
+using Unigram.Common;
+using Unigram.Controls;
+using Unigram.Core.Notifications;
+using Unigram.Core.Services;
+using Unigram.Services;
+using Unigram.ViewModels;
+using Unigram.ViewModels.BasicGroups;
+using Unigram.ViewModels.Channels;
+using Unigram.ViewModels.Chats;
+using Unigram.ViewModels.Delegates;
+using Unigram.ViewModels.Dialogs;
+using Unigram.ViewModels.Payments;
+using Unigram.ViewModels.SecretChats;
+using Unigram.ViewModels.Settings;
+using Unigram.ViewModels.Settings.Privacy;
+using Unigram.ViewModels.SignIn;
+using Unigram.ViewModels.Supergroups;
+using Unigram.ViewModels.Users;
+using Unigram.Views;
+using Unigram.Views.BasicGroups;
+using Unigram.Views.Channels;
+using Unigram.Views.Chats;
+using Unigram.Views.Dialogs;
+using Unigram.Views.Payments;
+using Unigram.Views.SecretChats;
+using Unigram.Views.Settings;
+using Unigram.Views.Settings.Privacy;
+using Unigram.Views.SignIn;
+using Unigram.Views.Supergroups;
+using Unigram.Views.Users;
 using Windows.ApplicationModel;
 using Windows.ApplicationModel.Activation;
-using Windows.UI;
-using Windows.UI.ViewManagement;
-using Windows.UI.Xaml;
-using Windows.UI.Xaml.Media;
-using Unigram.Views;
-using Unigram.Core.Notifications;
-using Windows.UI.Xaml.Controls;
-using Windows.ApplicationModel.DataTransfer.ShareTarget;
-using Windows.Media.SpeechRecognition;
-using Windows.ApplicationModel.VoiceCommands;
 using Windows.ApplicationModel.AppService;
 using Windows.ApplicationModel.Background;
-using Windows.Networking.PushNotifications;
-using Unigram.Tasks;
-using Windows.UI.Notifications;
-using Windows.Storage;
-using Windows.UI.Popups;
-using Unigram.Common;
-using Windows.Media;
-using System.IO;
-using Template10.Services.NavigationService;
-using Unigram.Views.SignIn;
-using Windows.UI.Core;
-using Unigram.Converters;
-using Windows.Foundation.Metadata;
-using Windows.ApplicationModel.Core;
-using System.Collections;
-using Telegram.Api.TL;
-using System.Collections.Generic;
-using Unigram.Core.Services;
-using Template10.Controls;
-using Windows.Foundation;
 using Windows.ApplicationModel.Contacts;
-using Telegram.Api.Aggregator;
+using Windows.ApplicationModel.Core;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.ApplicationModel.DataTransfer.ShareTarget;
+using Windows.ApplicationModel.VoiceCommands;
+using Windows.Foundation;
+using Windows.Foundation.Metadata;
+using Windows.Media;
+using Windows.Media.Playback;
+using Windows.Media.SpeechRecognition;
+using Windows.UI;
+using Windows.UI.Core;
+using Windows.UI.Notifications;
+using Windows.UI.StartScreen;
+using Windows.UI.ViewManagement;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Media;
+using Windows.UI.Xaml.Resources;
 
 namespace Unigram
 {
@@ -51,18 +68,28 @@ namespace Unigram
     /// </summary>
     sealed partial class App : BootStrapper
     {
-        public static ShareOperation ShareOperation { get; private set; }
+        public static ShareOperation ShareOperation { get; set; }
+        public static DataPackageView DataPackage { get; set; }
+
         public static AppServiceConnection Connection { get; private set; }
 
         public static AppInMemoryState InMemoryState { get; } = new AppInMemoryState();
 
-        public ViewModelLocator Locator
-        {
-            get
-            {
-                return Resources["Locator"] as ViewModelLocator;
-            }
-        }
+        private readonly UISettings _uiSettings;
+
+        public UISettings UISettings => _uiSettings;
+
+        //public ViewModelLocator Locator
+        //{
+        //    get
+        //    {
+        //        return Resources["Locator"] as ViewModelLocator;
+        //    }
+        //}
+
+        public ViewModelLocator Locator { get; } = new ViewModelLocator();
+
+        public static MediaPlayer Playback { get; } = new MediaPlayer();
 
         private BackgroundTaskDeferral appServiceDeferral = null;
 
@@ -75,18 +102,25 @@ namespace Unigram
         /// </summary>
         public App()
         {
+            if (ApplicationSettings.Current.RequestedTheme != ElementTheme.Default)
+            {
+                RequestedTheme = ApplicationSettings.Current.RequestedTheme == ElementTheme.Dark ? ApplicationTheme.Dark : ApplicationTheme.Light;
+            }
+
+#if DEBUG
+            Windows.Globalization.ApplicationLanguages.PrimaryLanguageOverride = "en";
+#endif
+
+            Locator.Configure();
+
             InitializeComponent();
+
+            _uiSettings = new UISettings();
 
             m_mediaExtensionManager = new MediaExtensionManager();
             m_mediaExtensionManager.RegisterByteStreamHandler("Unigram.Native.OpusByteStreamHandler", ".ogg", "audio/ogg");
 
-            if (SettingsHelper.SwitchGuid != null)
-            {
-                SettingsHelper.SessionGuid = SettingsHelper.SwitchGuid;
-                SettingsHelper.SwitchGuid = null;
-            }
-
-            FileUtils.CreateTemporaryFolder();
+            InactivityHelper.Detected += Inactivity_Detected;
 
             UnhandledException += async (s, args) =>
             {
@@ -94,14 +128,14 @@ namespace Unigram
 
                 try
                 {
-                    await new MessageDialog(args.Exception?.ToString() ?? string.Empty, "Unhandled exception").ShowQueuedAsync();
+                    await new TLMessageDialog(args.Exception?.ToString() ?? string.Empty, "Unhandled exception").ShowQueuedAsync();
                 }
                 catch { }
             };
 
 #if !DEBUG
 
-            HockeyClient.Current.Configure("7d36a4260af54125bbf6db407911ed3b",
+            HockeyClient.Current.Configure(Constants.HockeyAppId,
                 new TelemetryConfiguration()
                 {
                     EnableDiagnostics = true,
@@ -111,6 +145,200 @@ namespace Unigram
                 });
 
 #endif
+        }
+
+        public override INavigable ResolveForPage(Page page, INavigationService navigationService)
+        {
+            var id = navigationService is UnigramNavigationService ex ? ex.SessionId : 0;
+            var container = UnigramContainer.Current;
+
+            switch (page)
+            {
+                case BasicGroupEditPage basicGroupEdit:
+                    return container.Resolve<BasicGroupEditViewModel, IBasicGroupDelegate>(basicGroupEdit, id);
+                case ChannelCreateStep1Page channelCreateStep1:
+                    return container.Resolve<ChannelCreateStep1ViewModel>(id);
+                case ChannelCreateStep2Page channelCreateStep2:
+                    return container.Resolve<ChannelCreateStep2ViewModel>(id);
+                case ChannelCreateStep3Page channelCreateStep3:
+                    return container.Resolve<ChannelCreateStep3ViewModel>(id);
+                case ChatCreateStep1Page chatCreateStep1:
+                    return container.Resolve<ChatCreateStep1ViewModel>(id);
+                case ChatCreateStep2Page chatCreateStep2:
+                    return container.Resolve<ChatCreateStep2ViewModel>(id);
+                case ChatInviteLinkPage chatInviteLink:
+                    return container.Resolve<ChatInviteLinkViewModel>(id);
+                case ChatInvitePage chatInvite:
+                    return container.Resolve<ChatInviteViewModel>(id);
+                case DialogSharedMediaPage dialogSharedMedia:
+                    return container.Resolve<DialogSharedMediaViewModel, IFileDelegate>(dialogSharedMedia, id);
+                case DialogShareLocationPage dialogShareLocation:
+                    return container.Resolve<DialogShareLocationViewModel>(id);
+                case InstantPage instant:
+                    return container.Resolve<InstantViewModel>(id);
+                case MainPage main:
+                    return container.Resolve<MainViewModel>(id);
+                case PaymentFormStep1Page paymentFormStep1:
+                    return container.Resolve<PaymentFormStep1ViewModel>(id);
+                case PaymentFormStep2Page paymentFormStep2:
+                    return container.Resolve<PaymentFormStep2ViewModel>(id);
+                case PaymentFormStep3Page paymentFormStep3:
+                    return container.Resolve<PaymentFormStep3ViewModel>(id);
+                case PaymentFormStep4Page paymentFormStep4:
+                    return container.Resolve<PaymentFormStep4ViewModel>(id);
+                case PaymentFormStep5Page paymentFormStep5:
+                    return container.Resolve<PaymentFormStep5ViewModel>(id);
+                case PaymentReceiptPage paymentReceipt:
+                    return container.Resolve<PaymentReceiptViewModel>(id);
+                case ProfilePage profile:
+                    return container.Resolve<ProfileViewModel, IProfileDelegate>(profile, id);
+                case SecretChatCreatePage secretChatCreate:
+                    return container.Resolve<SecretChatCreateViewModel>(id);
+                case SettingsPhoneIntroPage settingsPhoneIntro:
+                    return container.Resolve<SettingsPhoneIntroViewModel>(id);
+                case SettingsPhonePage settingsPhone:
+                    return container.Resolve<SettingsPhoneViewModel>(id);
+                case SettingsPhoneSentCodePage settingsPhoneSentCode:
+                    return container.Resolve<SettingsPhoneSentCodeViewModel>(id);
+                case SettingsPrivacyAllowCallsPage settingsPrivacyAllowCalls:
+                    return container.Resolve<SettingsPrivacyAllowCallsViewModel>(id);
+                case SettingsPrivacyAllowChatInvitesPage settingsPrivacyAllowChatInvites:
+                    return container.Resolve<SettingsPrivacyAllowChatInvitesViewModel>(id);
+                case SettingsPrivacyAlwaysAllowCallsPage settingsPrivacyAlwaysAllowCalls:
+                    return container.Resolve<SettingsPrivacyAlwaysAllowCallsViewModel>(id);
+                case SettingsPrivacyAlwaysAllowChatInvitesPage settingsPrivacyAlwaysAllowChatInvites:
+                    return container.Resolve<SettingsPrivacyAlwaysAllowChatInvitesViewModel>(id);
+                case SettingsPrivacyAlwaysShowStatusPage settingsPrivacyAlwaysShowStatus:
+                    return container.Resolve<SettingsPrivacyAlwaysShowStatusViewModel>(id);
+                case SettingsPrivacyNeverAllowCallsPage settingsPrivacyNeverAllowCalls:
+                    return container.Resolve<SettingsPrivacyNeverAllowCallsViewModel>(id);
+                case SettingsPrivacyNeverAllowChatInvitesPage settingsPrivacyNeverAllowChatInvites:
+                    return container.Resolve<SettingsPrivacyNeverAllowChatInvitesViewModel>(id);
+                case SettingsPrivacyNeverShowStatusPage settingsPrivacyNeverShowStatus:
+                    return container.Resolve<SettingsPrivacyNeverShowStatusViewModel>(id);
+                case SettingsPrivacyShowStatusPage settingsPrivacyShowStatus:
+                    return container.Resolve<SettingsPrivacyShowStatusViewModel>(id);
+                case SettingsAppearancePage settingsAppearance:
+                    return container.Resolve<SettingsAppearanceViewModel>(id);
+                case SettingsBlockedUsersPage settingsBlockedUsers:
+                    return container.Resolve<SettingsBlockedUsersViewModel, IFileDelegate>(settingsBlockedUsers, id);
+                case SettingsBlockUserPage settingsBlockUser:
+                    return container.Resolve<SettingsBlockUserViewModel>(id);
+                case SettingsDataAndStoragePage settingsDataAndStorage:
+                    return container.Resolve<SettingsDataAndStorageViewModel>(id);
+                case SettingsDataAutoPage settingsDataAuto:
+                    return container.Resolve<SettingsDataAutoViewModel>(id);
+                case SettingsGeneralPage settingsGeneral:
+                    return container.Resolve<SettingsGeneralViewModel>(id);
+                case SettingsLanguagePage settingsLanguage:
+                    return container.Resolve<SettingsLanguageViewModel>(id);
+                case SettingsMasksArchivedPage settingsMasksArchived:
+                    return container.Resolve<SettingsMasksArchivedViewModel>(id);
+                case SettingsMasksPage settingsMasks:
+                    return container.Resolve<SettingsMasksViewModel>(id);
+                case SettingsNotificationsPage settingsNotifications:
+                    return container.Resolve<SettingsNotificationsViewModel>(id);
+                case SettingsPrivacyAndSecurityPage settingsPrivacyAndSecurity:
+                    return container.Resolve<SettingsPrivacyAndSecurityViewModel>(id);
+                case SettingsSecurityChangePasswordPage settingsSecurityChangePassword:
+                    return container.Resolve<SettingsSecurityChangePasswordViewModel>(id);
+                case SettingsSecurityEnterPasswordPage settingsSecurityEnterPassword:
+                    return container.Resolve<SettingsSecurityEnterPasswordViewModel>(id);
+                case SettingsSecurityPasscodePage settingsSecurityPasscode:
+                    return container.Resolve<SettingsSecurityPasscodeViewModel>(id);
+                case SettingsSessionsPage settingsSessions:
+                    return container.Resolve<SettingsSessionsViewModel>(id);
+                case SettingsStatsPage settingsNetwork:
+                    return container.Resolve<SettingsNetworkViewModel>(id);
+                case SettingsStickersArchivedPage settingsStickersArchived:
+                    return container.Resolve<SettingsStickersArchivedViewModel>(id);
+                case SettingsStickersFeaturedPage settingsStickersTrending:
+                    return container.Resolve<SettingsStickersTrendingViewModel>(id);
+                case SettingsStickersPage settingsStickers:
+                    return container.Resolve<SettingsStickersViewModel>(id);
+                case SettingsStoragePage settingsStorage:
+                    return container.Resolve<SettingsStorageViewModel>(id);
+                case SettingsUsernamePage settingsUsername:
+                    return container.Resolve<SettingsUsernameViewModel>(id);
+                case SettingsWallPaperPage settingsWallPaper:
+                    return container.Resolve<SettingsWallPaperViewModel>(id);
+                case SettingsWebSessionsPage settingsWebSessions:
+                    return container.Resolve<SettingsWebSessionsViewModel>(id);
+                case SettingsPage settings:
+                    return container.Resolve<SettingsViewModel, IUserDelegate>(settings, id);
+                case SignInPage signIn:
+                    return container.Resolve<SignInViewModel>(id);
+                case SignInPasswordPage signInPassword:
+                    return container.Resolve<SignInPasswordViewModel>(id);
+                case SignInSentCodePage signInSentCode:
+                    return container.Resolve<SignInSentCodeViewModel>(id);
+                case SignUpPage signUp:
+                    return container.Resolve<SignUpViewModel>(id);
+                case SupergroupAddAdministratorPage supergroupAddAdministrator:
+                    return container.Resolve<SupergroupAddAdministratorViewModel>(id);
+                case SupergroupAddRestrictedPage supergroupAddRestricted:
+                    return container.Resolve<SupergroupAddRestrictedViewModel>(id);
+                case SupergroupAdministratorsPage supergroupAdministrators:
+                    return container.Resolve<SupergroupAdministratorsViewModel, ISupergroupDelegate>(supergroupAdministrators, id);
+                case SupergroupBannedPage supergroupBanned:
+                    return container.Resolve<SupergroupBannedViewModel, ISupergroupDelegate>(supergroupBanned, id);
+                case SupergroupEditAdministratorPage supergroupEditAdministrator:
+                    return container.Resolve<SupergroupEditAdministratorViewModel, IMemberDelegate>(supergroupEditAdministrator, id);
+                case SupergroupEditPage supergroupEdit:
+                    return container.Resolve<SupergroupEditViewModel, ISupergroupDelegate>(supergroupEdit, id);
+                case SupergroupEditRestrictedPage supergroupEditRestricted:
+                    return container.Resolve<SupergroupEditRestrictedViewModel, IMemberDelegate>(supergroupEditRestricted, id);
+                case SupergroupEditStickerSetPage supergroupEditStickerSet:
+                    return container.Resolve<SupergroupEditStickerSetViewModel>(id);
+                case SupergroupEventLogPage supergroupEventLog:
+                    return container.Resolve<SupergroupEventLogViewModel>(id);
+                case SupergroupMembersPage supergroupMembers:
+                    return container.Resolve<SupergroupMembersViewModel, ISupergroupDelegate>(supergroupMembers, id);
+                case SupergroupRestrictedPage supergroupRestricted:
+                    return container.Resolve<SupergroupRestrictedViewModel, ISupergroupDelegate>(supergroupRestricted, id);
+                case UserCommonChatsPage userCommonChats:
+                    return container.Resolve<UserCommonChatsViewModel>(id);
+                case UserCreatePage userCreate:
+                    return container.Resolve<UserCreateViewModel>(id);
+            }
+
+            return base.ResolveForPage(page, navigationService);
+        }
+
+        protected override void OnWindowCreated(WindowCreatedEventArgs args)
+        {
+            CustomXamlResourceLoader.Current = new XamlResourceLoader();
+            WindowContext.GetForCurrentView();
+            base.OnWindowCreated(args);
+        }
+
+        private void Inactivity_Detected(object sender, EventArgs e)
+        {
+            Execute.BeginOnUIThread(() =>
+            {
+                var passcode = UnigramContainer.Current.Resolve<IPasscodeService>();
+                if (passcode != null && UIViewSettings.GetForCurrentView().UserInteractionMode == UserInteractionMode.Mouse)
+                {
+                    passcode.Lock();
+                    ShowPasscode();
+                }
+            });
+        }
+
+        private static volatile bool _passcodeShown;
+        public static async void ShowPasscode()
+        {
+            if (_passcodeShown)
+            {
+                return;
+            }
+
+            _passcodeShown = true;
+
+            var dialog = new PasscodePage();
+            var result = await dialog.ShowQueuedAsync();
+
+            _passcodeShown = false;
         }
 
         public static bool IsActive { get; private set; }
@@ -126,32 +354,46 @@ namespace Unigram
         {
             IsVisible = e.Visible;
             HandleActivated(e.Visible);
+
+            var passcode = UnigramContainer.Current.Resolve<IPasscodeService>();
+            if (passcode != null)
+            {
+                if (e.Visible && passcode.IsLockscreenRequired)
+                {
+                    ShowPasscode();
+                }
+                else
+                {
+                    if (UIViewSettings.GetForCurrentView().UserInteractionMode == UserInteractionMode.Touch)
+                    {
+                        passcode.CloseTime = DateTime.Now;
+                    }
+                    else
+                    {
+                        passcode.CloseTime = DateTime.Now.AddYears(1);
+                    }
+                }
+            }
+
+#if !DEBUG && !PREVIEW
+            if (e.Visible)
+            {
+                var dispatcher = Window.Current.Dispatcher;
+                Execute.BeginOnThreadPool(async () =>
+                {
+                    await new HockeyAppUpdateService().CheckForUpdatesAsync(Constants.HockeyAppId, dispatcher);
+                });
+            }
+#endif
         }
 
         private void HandleActivated(bool active)
         {
-            var aggregator = UnigramContainer.Current.ResolveType<ITelegramEventAggregator>();
+            var aggregator = UnigramContainer.Current.Resolve<IEventAggregator>();
             aggregator.Publish(active ? "Window_Activated" : "Window_Deactivated");
 
-            if (active)
-            {
-                Locator.LoadStateAndUpdate();
-
-                var protoService = UnigramContainer.Current.ResolveType<IMTProtoService>();
-                protoService.UpdateStatusAsync(false, null);
-            }
-            else
-            {
-                var cacheService = UnigramContainer.Current.ResolveType<ICacheService>();
-                cacheService.TryCommit();
-
-                var updatesService = UnigramContainer.Current.ResolveType<IUpdatesService>();
-                updatesService.SaveState();
-                updatesService.CancelUpdating();
-
-                var protoService = UnigramContainer.Current.ResolveType<IMTProtoService>();
-                protoService.UpdateStatusAsync(true, null);
-            }
+            var protoService = UnigramContainer.Current.Resolve<IProtoService>();
+            protoService.Send(new SetOption("online", new OptionValueBoolean(active)));
         }
 
         /////// <summary>
@@ -183,163 +425,148 @@ namespace Unigram
         public override UIElement CreateRootElement(IActivatedEventArgs e)
         {
             var navigationFrame = new Frame();
-            var navigationService = NavigationServiceFactory(BackButton.Ignore, ExistingContent.Include, navigationFrame);
-            //return new ModalDialog
-            //{
-            //    DisableBackButtonWhenModal = false,
-            //    Content = navigationFrame
-            //};
+            var navigationService = NavigationServiceFactory(BackButton.Ignore, ExistingContent.Include, navigationFrame) as NavigationService;
+            navigationService.SerializationService = TLSerializationService.Current;
 
             return navigationFrame;
         }
 
+        protected override INavigationService CreateNavigationService(Frame frame)
+        {
+            return new UnigramNavigationService(UnigramContainer.Current.Resolve<IProtoService>(), frame);
+        }
+
         public override Task OnInitializeAsync(IActivatedEventArgs args)
         {
-            Execute.Initialize();
-            Locator.Configure();
+            //Locator.Configure();
+            //UnigramContainer.Current.ResolveType<IGenerationService>();
+
+            var passcode = UnigramContainer.Current.Resolve<IPasscodeService>();
+            if (passcode != null && passcode.IsEnabled)
+            {
+                passcode.Lock();
+                InactivityHelper.Initialize(passcode.AutolockTimeout);
+            }
+
+            if (Window.Current != null)
+            {
+                Execute.Initialize();
+
+                Window.Current.Activated -= Window_Activated;
+                Window.Current.Activated += Window_Activated;
+                Window.Current.VisibilityChanged -= Window_VisibilityChanged;
+                Window.Current.VisibilityChanged += Window_VisibilityChanged;
+
+                WindowContext.GetForCurrentView().UpdateTitleBar();
+                ApplicationView.GetForCurrentView().SetPreferredMinSize(new Size(320, 500));
+                SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = AppViewBackButtonVisibility.Visible;
+
+                Theme.Current.Update();
+                NotifyThemeChanged();
+            }
+
             return base.OnInitializeAsync(args);
         }
 
         public override async Task OnStartAsync(StartKind startKind, IActivatedEventArgs args)
         {
-            //NavigationService.Navigate(typeof(PlaygroundPage2));
-            //return;
-            //return Task.CompletedTask;
+            var service = UnigramContainer.Current.Resolve<IProtoService>();
 
-            //PhoneCallPage newPlayer = null;
-            //CoreApplicationView newView = CoreApplication.CreateNewView();
-            //var newViewId = 0;
-            //await newView.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, () =>
-            //{
-            //    newPlayer = new PhoneCallPage();
-            //    Window.Current.Content = newPlayer;
-            //    Window.Current.Activate();
-            //    newViewId = ApplicationView.GetForCurrentView().Id;
-            //});
-
-            //await CoreApplication.MainView.CoreWindow.Dispatcher.RunAsync(CoreDispatcherPriority.Normal, async () =>
-            //{
-            //    var overlay = ApplicationView.GetForCurrentView().IsViewModeSupported(ApplicationViewMode.CompactOverlay);
-            //    if (overlay)
-            //    {
-            //        var preferences = ViewModePreferences.CreateDefault(ApplicationViewMode.CompactOverlay);
-            //        preferences.CustomSize = new Size(340, 200);
-
-            //        var viewShown = await ApplicationViewSwitcher.TryShowAsViewModeAsync(newViewId, ApplicationViewMode.CompactOverlay, preferences);
-            //    }
-            //    else
-            //    {
-            //        //await ApplicationViewSwitcher.SwitchAsync(newViewId);
-            //        await ApplicationViewSwitcher.TryShowAsStandaloneAsync(newViewId);
-            //    }
-            //});
-
-            //return;
-
-            if (SettingsHelper.IsAuthorized)
+            var state = service.GetAuthorizationState();
+            if (state == null)
             {
-                var share = args as ShareTargetActivatedEventArgs;
-                var voice = args as VoiceCommandActivatedEventArgs;
-                var contact = args as ContactPanelActivatedEventArgs;
-
-                if (share != null)
-                {
-                    ShareOperation = share.ShareOperation;
-                    NavigationService.Navigate(typeof(ShareTargetPage));
-                }
-                else if (voice != null)
-                {
-                    SpeechRecognitionResult speechResult = voice.Result;
-                    string command = speechResult.RulePath[0];
-
-                    if (command == "ShowAllDialogs")
-                    {
-                        NavigationService.Navigate(typeof(MainPage));
-                    }
-                    if (command == "ShowSpecificDialog")
-                    {
-                        //#TODO: Fix that this'll open a specific dialog
-                        NavigationService.Navigate(typeof(MainPage));
-                    }
-                    else
-                    {
-                        NavigationService.Navigate(typeof(MainPage));
-                    }
-                }
-                else if (contact != null)
-                {
-                    var backgroundBrush = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
-                    contact.ContactPanel.HeaderColor = backgroundBrush.Color;
-
-                    var store = await ContactManager.RequestStoreAsync(ContactStoreAccessType.AppContactsReadWrite);
-                    var annotationStore = await ContactManager.RequestAnnotationStoreAsync(ContactAnnotationStoreAccessType.AppAnnotationsReadWrite);
-                    var full = await store.GetContactAsync(contact.Contact.Id);
-                    var annotations = await annotationStore.FindAnnotationsForContactAsync(full);
-
-                    var remote = annotations[0].RemoteId;
-
-                    //var user = InMemoryCacheService.Current.GetUser(int.Parse(remote.Substring(1)));
-                    //if (user != null)
-                    //{
-                    //    NavigationService.Navigate(typeof(DialogPage), user.ToPeer());
-                    //}
-
-                    //NavigationService.Navigate(typeof(MainPage), $"from_id={remote.Substring(1)}");
-                    NavigationService.Navigate(typeof(DialogPage), new TLPeerUser { UserId = int.Parse(remote.Substring(1)) });
-                }
-                else
-                {
-                    var activate = args as ToastNotificationActivatedEventArgs;
-                    var launch = activate?.Argument ?? null;
-
-                    NavigationService.Navigate(typeof(MainPage), launch);
-                }
-            }
-            else
-            {
-                NavigationService.Navigate(typeof(SignInWelcomePage));
+                return;
             }
 
-            // NO! Many tv models have borders!
-            //// Remove borders on Xbox
-            //var device = Windows.ApplicationModel.Resources.Core.ResourceContext.GetForCurrentView().QualifierValues;
-            //bool isXbox = (device.ContainsKey("DeviceFamily") && device["DeviceFamily"] == "Xbox");
+            CustomXamlResourceLoader.Current = new XamlResourceLoader();
 
-            //if (isXbox == true)
-            //{
-            //    Windows.UI.ViewManagement.ApplicationView.GetForCurrentView().SetDesiredBoundsMode(Windows.UI.ViewManagement.ApplicationViewBoundsMode.UseCoreWindow);
-            //}
+            //var service = UnigramContainer.Current.ResolveType<IProtoService>();
+            //var response = await service.SendAsync(new GetAuthorizationState());
+            //if (response is AuthorizationStateReady)
+            WindowContext.GetForCurrentView().SetActivatedArgs(args, NavigationService);
+            WindowContext.GetForCurrentView().UpdateTitleBar();
 
             Window.Current.Activated -= Window_Activated;
             Window.Current.Activated += Window_Activated;
             Window.Current.VisibilityChanged -= Window_VisibilityChanged;
             Window.Current.VisibilityChanged += Window_VisibilityChanged;
 
-            ShowStatusBar();
-            ColourTitleBar();
-            ApplicationView.GetForCurrentView().SetPreferredMinSize(new Windows.Foundation.Size(320, 500));
+            ApplicationView.GetForCurrentView().SetPreferredMinSize(new Size(320, 500));
             SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = AppViewBackButtonVisibility.Visible;
 
-            Task.Run(() => OnStartSync());
+            Theme.Current.Update();
+            NotifyThemeChanged();
+
+            var dispatcher = Window.Current.Dispatcher;
+            Task.Run(() => OnStartSync(dispatcher));
             //return Task.CompletedTask;
         }
 
-        private async void OnStartSync()
+        private bool TryParseCommandLine(CommandLineActivatedEventArgs args, out int id, out bool test)
         {
-//#if DEBUG
+#if !DEBUG
+            if (args.PreviousExecutionState != ApplicationExecutionState.Terminated)
+            {
+                id = 0;
+                test = false;
+                return false;
+            }
+#endif
+
+            try
+            {
+                var v_id = 0;
+                var v_test = false;
+
+                var p = new OptionSet()
+                {
+                    { "i|id=", (int v) => v_id = v },
+                    { "t|test", v => v_test = v != null },
+                };
+
+                var extra = p.Parse(args.Operation.Arguments.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+
+                id = v_id;
+                test = v_test;
+                return true;
+            }
+            catch
+            {
+                id = 0;
+                test = false;
+                return false;
+            }
+        }
+
+        private async void OnStartSync(CoreDispatcher dispatcher)
+        {
+            //#if DEBUG
             await VoIPConnection.Current.ConnectAsync();
-//#endif
+            //#endif
 
             await Toast.RegisterBackgroundTasks();
 
-            BadgeUpdateManager.CreateBadgeUpdaterForApplication("App").Clear();
             TileUpdateManager.CreateTileUpdaterForApplication("App").Clear();
             ToastNotificationManager.History.Clear("App");
+
+            //if (SettingsHelper.UserId > 0 && ApiInformation.IsApiContractPresent("Windows.Foundation.UniversalApiContract", 2) && JumpList.IsSupported())
+            //{
+            //    var current = await JumpList.LoadCurrentAsync();
+            //    current.SystemGroupKind = JumpListSystemGroupKind.None;
+            //    current.Items.Clear();
+
+            //    var cloud = JumpListItem.CreateWithArguments(string.Format("from_id={0}", SettingsHelper.UserId), Strings.Resources.SavedMessages);
+            //    cloud.Logo = new Uri("ms-appx:///Assets/JumpList/SavedMessages/SavedMessages.png");
+
+            //    current.Items.Add(cloud);
+
+            //    await current.SaveAsync();
+            //}
 
 #if !DEBUG && !PREVIEW
             Execute.BeginOnThreadPool(async () =>
             {
-                await new AppUpdateService().CheckForUpdatesAsync();
+                await new HockeyAppUpdateService().CheckForUpdatesAsync(Constants.HockeyAppId, dispatcher);
             });
 #endif
 
@@ -359,115 +586,58 @@ namespace Unigram
 
         public override async void OnResuming(object s, object e, AppExecutionState previousExecutionState)
         {
-            var updatesService = UnigramContainer.Current.ResolveType<IUpdatesService>();
-            updatesService.LoadStateAndUpdate(() => { });
+            Logs.Log.Write("OnResuming");
 
-//#if DEBUG
+            //#if DEBUG
             await VoIPConnection.Current.ConnectAsync();
-//#endif
+            //#endif
 
             base.OnResuming(s, e, previousExecutionState);
         }
 
         public override Task OnSuspendingAsync(object s, SuspendingEventArgs e, bool prelaunchActivated)
         {
-            //DefaultPhotoConverter.BitmapContext.Clear();
-
-            var cacheService = UnigramContainer.Current.ResolveType<ICacheService>();
-            cacheService.TryCommit();
-
-            var updatesService = UnigramContainer.Current.ResolveType<IUpdatesService>();
-            updatesService.SaveState();
-            updatesService.CancelUpdating();
+            Logs.Log.Write("OnSuspendingAsync");
 
             return base.OnSuspendingAsync(s, e, prelaunchActivated);
         }
 
-        // Methods
-        private void ShowStatusBar()
-        {
-            // Show StatusBar on Win10 Mobile, in theme of the pass
-            if (ApiInformation.IsTypePresent("Windows.UI.ViewManagement.StatusBar"))
-            {
-                var statusBar = StatusBar.GetForCurrentView();
-
-                var bgcolor = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
-
-                // Background
-                statusBar.BackgroundColor = bgcolor.Color;
-                statusBar.BackgroundOpacity = 1;
-
-                // Branding colour
-                //statusBar.BackgroundColor = Color.FromArgb(255, 54, 173, 225);
-                //statusBar.ForegroundColor = Colors.White;
-                //statusBar.BackgroundOpacity = 1;
-            }
-        }
-
-        private void ColourTitleBar()
-        {
-            try
-            {
-                //Window.Current.Activated -= Window_Activated;
-                //Window.Current.Activated += Window_Activated;
-
-                // Changes to the titlebar (colour, and such)
-                CoreApplication.GetCurrentView().TitleBar.ExtendViewIntoTitleBar = false;
-
-                var titlebar = ApplicationView.GetForCurrentView().TitleBar;
-                var backgroundBrush = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
-                var foregroundBrush = Application.Current.Resources["SystemControlForegroundBaseHighBrush"] as SolidColorBrush;
-
-                titlebar.BackgroundColor = backgroundBrush.Color;
-                titlebar.ForegroundColor = foregroundBrush.Color;
-                titlebar.ButtonBackgroundColor = backgroundBrush.Color;
-                titlebar.ButtonForegroundColor = foregroundBrush.Color;
-
-                //// Accent Color
-                //var accentBrush = Application.Current.Resources["SystemControlHighlightAccentBrush"] as SolidColorBrush;
-                //var titleBrush = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
-                //var subtitleBrush = Application.Current.Resources["TelegramBackgroundSubtitleBarBrush"] as SolidColorBrush;
-
-                //// Foreground
-                //titlebar.ButtonForegroundColor = Colors.White;
-                //titlebar.ButtonHoverForegroundColor = Colors.White;
-                //titlebar.ButtonInactiveForegroundColor = Colors.LightGray;
-                //titlebar.ButtonPressedForegroundColor = Colors.White;
-                //titlebar.ForegroundColor = Colors.White;
-                //titlebar.InactiveForegroundColor = Colors.LightGray;
-
-                //// Background
-                //titlebar.BackgroundColor = titleBrush.Color;
-                //titlebar.ButtonBackgroundColor = titleBrush.Color;
-
-                //titlebar.InactiveBackgroundColor = subtitleBrush.Color;
-                //titlebar.ButtonInactiveBackgroundColor = subtitleBrush.Color;
-
-                //titlebar.ButtonHoverBackgroundColor = Helpers.ColorsHelper.ChangeShade(titleBrush.Color, -0.06f);
-                //titlebar.ButtonPressedBackgroundColor = Helpers.ColorsHelper.ChangeShade(titleBrush.Color, -0.09f);
-
-                //// Branding colours
-                ////titlebar.BackgroundColor = Color.FromArgb(255, 54, 173, 225);
-                ////titlebar.ButtonBackgroundColor = Color.FromArgb(255, 54, 173, 225);
-                ////titlebar.ButtonHoverBackgroundColor = Color.FromArgb(255, 69, 179, 227);
-                ////titlebar.ButtonPressedBackgroundColor = Color.FromArgb(255, 84, 185, 229);
-            }
-            catch (Exception ex)
-            {
-                Debug.WriteLine("Device does not have a Titlebar");
-            }
-        }
 
         //private void Window_Activated(object sender, WindowActivatedEventArgs e)
         //{
-        //    ((SolidColorBrush)Resources["TelegramBackgroundTitlebarBrush"]).Color = e.WindowActivationState != CoreWindowActivationState.Deactivated ? ((SolidColorBrush)Resources["TelegramBackgroundTitlebarBrushBase"]).Color : ((SolidColorBrush)Resources["TelegramBackgroundTitlebarBrushDeactivated"]).Color;
+        //    ((SolidColorBrush)Resources["TelegramTitleBarBackgroundBrush"]).Color = e.WindowActivationState != CoreWindowActivationState.Deactivated ? ((SolidColorBrush)Resources["TelegramTitleBarBackgroundBrushBase"]).Color : ((SolidColorBrush)Resources["TelegramTitleBarBackgroundBrushDeactivated"]).Color;
         //}
+
+        public static void NotifyThemeChanged()
+        {
+            var frame = Window.Current.Content as Frame;
+            if (frame == null)
+            {
+                return;
+            }
+
+            var current = App.Current as App;
+            var theme = current.UISettings.GetColorValue(UIColorType.Background);
+
+            frame.RequestedTheme = ApplicationSettings.Current.CurrentTheme == ElementTheme.Dark || (ApplicationSettings.Current.CurrentTheme == ElementTheme.Default && theme.R == 0 && theme.G == 0 && theme.B == 0) ? ElementTheme.Light : ElementTheme.Dark;
+            frame.RequestedTheme = ApplicationSettings.Current.CurrentTheme;
+
+            //var dark = (bool)App.Current.Resources["IsDarkTheme"];
+
+            //frame.RequestedTheme = dark ? ElementTheme.Light : ElementTheme.Dark;
+            //frame.RequestedTheme = ElementTheme.Default;
+        }
     }
 
     public class AppInMemoryState
     {
-        public IEnumerable<TLMessage> ForwardMessages { get; set; }
+        public InlineKeyboardButtonTypeSwitchInline SwitchInline { get; set; }
+        public User SwitchInlineBot { get; set; }
 
-        public TLMessage SwitchInline { get; set; }
+        public string SendMessage { get; set; }
+        public bool SendMessageUrl { get; set; }
+
+        public int? NavigateToMessage { get; set; }
+        public string NavigateToAccessToken { get; set; }
     }
 }

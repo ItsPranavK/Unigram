@@ -17,7 +17,7 @@ namespace Unigram.Common
 
     }
 
-    public abstract class IncrementalCollection<T> : ObservableCollection<T>, IGroupSupportIncrementalLoading, INotifyPropertyChanged
+    public abstract class IncrementalCollection<T> : ObservableCollection<T>, IGroupSupportIncrementalLoading
     {
         private bool _hasMoreItems = true;
         public bool HasMoreItems
@@ -93,7 +93,7 @@ namespace Unigram.Common
                 var result = await LoadDataAsync();
                 var oldCount = Count;
                 Merge(result);
-                HasMoreItems = Count > 0 && Count > oldCount && GetHasMoreItems();
+                HasMoreItems = Count > 0 && (/*Count > oldCount ||*/ GetHasMoreItems());
 
                 return new LoadMoreItemsResult { Count = (uint)result.Count };
             });
@@ -114,10 +114,9 @@ namespace Unigram.Common
             }
         }
 
-        public new event PropertyChangedEventHandler PropertyChanged;
         protected void RaisePropertyChanged(string propertyName)
         {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
         }
     }
 }

@@ -1,4 +1,5 @@
-﻿using System;
+using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -6,889 +7,648 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Helpers;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Controls.Views;
+using Unigram.Converters;
+using Unigram.Core.Common;
 using Unigram.Core.Helpers;
 using Unigram.Core.Models;
+using Unigram.Entities;
 using Unigram.Services;
 using Unigram.Views;
+using Unigram.Views.Dialogs;
+using Windows.ApplicationModel.Contacts;
+using Windows.Foundation;
 using Windows.Media.Effects;
 using Windows.Media.MediaProperties;
 using Windows.Media.Transcoding;
 using Windows.Storage;
+using Windows.Storage.AccessCache;
 using Windows.Storage.FileProperties;
 using Windows.Storage.Pickers;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
 
 namespace Unigram.ViewModels
 {
     public partial class DialogViewModel
     {
-        public RelayCommand<TLDocument> SendStickerCommand => new RelayCommand<TLDocument>(SendStickerExecute);
-        public void SendStickerExecute(TLDocument document)
+        public RelayCommand<Sticker> SendStickerCommand { get; }
+        public async void SendStickerExecute(Sticker sticker)
         {
-            SendDocument(document, null);
-            Stickers.StickersService.AddRecentSticker(StickerType.Image, document, (int)(Utils.CurrentTimestamp / 1000));
-        }
-
-        public RelayCommand<TLDocument> SendGifCommand => new RelayCommand<TLDocument>(SendGifExecute);
-        public void SendGifExecute(TLDocument document)
-        {
-            SendDocument(document, null);
-            Stickers.StickersService.AddRecentGif(document, (int)(Utils.CurrentTimestamp / 1000));
-        }
-
-        private void SendDocument(TLDocument document, string caption)
-        {
-            var media = new TLMessageMediaDocument { Document = document, Caption = caption };
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
+            var chat = _chat;
+            if (chat == null)
             {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
+                return;
             }
 
-            var previousMessage = InsertSendingMessage(message, false);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
+            var restricted = await VerifyRightsAsync(chat, x => x.CanSendOtherMessages, Strings.Resources.AttachStickersRestrictedForever, Strings.Resources.AttachStickersRestricted);
+            if (restricted)
             {
-                var input = new TLInputMediaDocument
-                {
-                    Caption = caption,
-                    Id = new TLInputDocument
-                    {
-                        Id = document.Id,
-                        AccessHash = document.AccessHash,
-                    }
-                };
+                return;
+            }
 
-                await ProtoService.SendMediaAsync(Peer, input, message);
-            });
+            var reply = GetReply(true);
+            var input = new InputMessageSticker(new InputFileId(sticker.StickerValue.Id), null, 0, 0);
+
+            await SendMessageAsync(reply, input);
         }
 
-        public RelayCommand<StorageFile> SendFileCommand => new RelayCommand<StorageFile>(SendFileExecute);
-        private async void SendFileExecute(StorageFile file)
+        public RelayCommand<Animation> SendAnimationCommand { get; }
+        public async void SendAnimationExecute(Animation animation)
         {
-            ObservableCollection<StorageFile> storages = null;
-
-            if (file == null)
+            var chat = _chat;
+            if (chat == null)
             {
-                var picker = new FileOpenPicker();
-                picker.ViewMode = PickerViewMode.Thumbnail;
-                picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
-                picker.FileTypeFilter.Add("*");
+                return;
+            }
 
-                var files = await picker.PickMultipleFilesAsync();
-                if (files != null)
+            var restricted = await VerifyRightsAsync(chat, x => x.CanSendOtherMessages, Strings.Resources.AttachStickersRestrictedForever, Strings.Resources.AttachStickersRestricted);
+            if (restricted)
+            {
+                return;
+            }
+
+            var reply = GetReply(true);
+            var input = new InputMessageSticker(new InputFileId(animation.AnimationValue.Id), null, 0, 0);
+
+            await SendMessageAsync(reply, input);
+        }
+
+        public async Task<bool> VerifyRightsAsync(Chat chat, Func<ChatMemberStatusRestricted, bool> permission, string forever, string temporary)
+        {
+            if (chat.Type is ChatTypeSupergroup super)
+            {
+                var supergroup = ProtoService.GetSupergroup(super.SupergroupId);
+                if (supergroup == null)
                 {
-                    storages = new ObservableCollection<StorageFile>(files);
+                    return false;
+                }
+
+                if (supergroup.Status is ChatMemberStatusRestricted restricted && !permission(restricted))
+                {
+                    if (restricted.IsForever())
+                    {
+                        await TLMessageDialog.ShowAsync(forever, Strings.Resources.AppName, Strings.Resources.OK);
+                    }
+                    else
+                    {
+                        await TLMessageDialog.ShowAsync(string.Format(temporary, BindConvert.Current.BannedUntil(restricted.RestrictedUntilDate)), Strings.Resources.AppName, Strings.Resources.OK);
+                    }
+
+                    return true;
                 }
             }
-            else
+
+            return false;
+        }
+
+        public RelayCommand SendFileCommand { get; }
+        private async void SendFileExecute()
+        {
+            if (MediaLibrary.SelectedCount > 0)
             {
-                storages = new ObservableCollection<StorageFile> { file };
+                foreach (var storage in MediaLibrary.Where(x => x.IsSelected))
+                {
+                    await SendFileAsync(storage.File, storage.Caption);
+                }
+
+                return;
             }
 
-            if (storages != null && storages.Count > 0)
+            var picker = new FileOpenPicker();
+            picker.ViewMode = PickerViewMode.Thumbnail;
+            picker.SuggestedStartLocation = PickerLocationId.DocumentsLibrary;
+            picker.FileTypeFilter.Add("*");
+
+            var files = await picker.PickMultipleFilesAsync();
+            if (files != null && files.Count > 0)
             {
-                foreach (var storage in storages)
+                foreach (var storage in files)
                 {
-                    //var props = await storage.Properties.GetVideoPropertiesAsync();
-                    //var width = props.Width;
-                    //var height = props.Height;
-                    //var x = 0d;
-                    //var y = 0d;
-
-                    //if (width > height) {
-                    //    x = (width - height) / 2;
-                    //    width = height;
-                    //}
-
-                    //if (height > width)
-                    //{
-                    //    y = (height - width) / 2;
-                    //    height = width;
-                    //}
-
-                    //var transform = new VideoTransformEffectDefinition();
-                    //transform.CropRectangle = new Windows.Foundation.Rect(x, y, width, height);
-                    //transform.OutputSize = new Windows.Foundation.Size(240, 240);
-
-                    //var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Vga);
-                    //profile.Video.Width = 240;
-                    //profile.Video.Height = 240;
-                    //profile.Video.Bitrate = 300000;
-
-                    //await SendVideoAsync(storage, null, true, transform, profile);
                     await SendFileAsync(storage, null);
                 }
             }
         }
 
-        private async Task SendFileAsync(StorageFile file, string caption)
+        public async void SendFileExecute(IList<StorageFile> files)
         {
-            var fileLocation = new TLFileLocation
+            foreach (var file in files)
             {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.dat", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            await file.CopyAndReplaceAsync(fileCache);
-
-            var basicProps = await fileCache.GetBasicPropertiesAsync();
-            var thumbnail = await FileUtils.GetFileThumbnailAsync(file);
-            if (thumbnail as TLPhotoSize != null)
-            {
-                await SendThumbnailFileAsync(file, fileLocation, fileName, basicProps, thumbnail as TLPhotoSize, fileCache, caption);
-            }
-            else
-            {
-                var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-                var document = new TLDocument
-                {
-                    Id = 0,
-                    AccessHash = 0,
-                    Date = date,
-                    Size = (int)basicProps.Size,
-                    MimeType = fileCache.ContentType,
-                    Attributes = new TLVector<TLDocumentAttributeBase>
-                {
-                    new TLDocumentAttributeFilename
-                    {
-                        FileName = file.Name
-                    }
-                }
-                };
-
-                var media = new TLMessageMediaDocument
-                {
-                    Document = document,
-                    Caption = caption
-                };
-
-                var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-                if (Reply != null)
-                {
-                    message.HasReplyToMsgId = true;
-                    message.ReplyToMsgId = Reply.Id;
-                    message.Reply = Reply;
-                    Reply = null;
-                }
-
-                var previousMessage = InsertSendingMessage(message);
-                CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-                {
-                    var fileId = TLLong.Random();
-                    var upload = await _uploadDocumentManager.UploadFileAsync(fileId, fileName, false).AsTask(Upload(media.Document as TLDocument, progress => new TLSendMessageUploadDocumentAction { Progress = progress }));
-                    if (upload != null)
-                    {
-                        var inputMedia = new TLInputMediaUploadedDocument
-                        {
-                            File = upload.ToInputFile(),
-                            MimeType = document.MimeType,
-                            Caption = media.Caption,
-                            Attributes = new TLVector<TLDocumentAttributeBase>
-                            {
-                                new TLDocumentAttributeFilename
-                                {
-                                    FileName = file.Name
-                                }
-                            }
-                        };
-
-                        var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                        //if (result.IsSucceeded)
-                        //{
-                        //    var update = result.Result as TLUpdates;
-                        //    if (update != null)
-                        //    {
-                        //        var newMessage = update.Updates.OfType<TLUpdateNewMessage>().FirstOrDefault();
-                        //        if (newMessage != null)
-                        //        {
-                        //            var newM = newMessage.Message as TLMessage;
-                        //            if (newM != null)
-                        //            {
-                        //                message.Media = newM.Media;
-                        //                message.RaisePropertyChanged(() => message.Media);
-                        //            }
-                        //        }
-                        //    }
-                        //}
-                    }
-                });
+                await SendFileAsync(file, null);
             }
         }
 
-        private Progress<double> Upload(ITLTransferable document, Func<int, TLSendMessageActionBase> action, double delta = 0.0, double divider = 1.0)
+        private async Task SendFileAsync(StorageFile file, string caption = null)
         {
-            document.IsTransferring = true;
-
-            return new Progress<double>((value) =>
+            var chat = _chat;
+            if (chat == null)
             {
-                var local = value / divider;
-
-                document.IsTransferring = local < 1 && local > 0;
-                document.UploadingProgress = delta + local;
-                Debug.WriteLine(value);
-
-                OutputTypingManager.SetTyping(action((int)local * 100));
-            });
-        }
-
-        private async Task SendThumbnailFileAsync(StorageFile file, TLFileLocation fileLocation, string fileName, BasicProperties basicProps, TLPhotoSize thumbnail, StorageFile fileCache, string caption)
-        {
-            var desiredName = string.Format("{0}_{1}_{2}.jpg", thumbnail.Location.VolumeId, thumbnail.Location.LocalId, thumbnail.Location.Secret);
-
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var document = new TLDocument
-            {
-                Id = 0,
-                AccessHash = 0,
-                Date = date,
-                Size = (int)basicProps.Size,
-                MimeType = fileCache.ContentType,
-                Thumb = thumbnail,
-                Attributes = new TLVector<TLDocumentAttributeBase>
-                {
-                    new TLDocumentAttributeFilename
-                    {
-                        FileName = file.Name
-                    }
-                }
-            };
-
-            var media = new TLMessageMediaDocument
-            {
-                Document = document,
-                Caption = caption
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
-            }
-
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-            {
-                var fileId = TLLong.Random();
-                var upload = await _uploadDocumentManager.UploadFileAsync(fileId, fileCache.Name, false).AsTask(Upload(media.Document as TLDocument, progress => new TLSendMessageUploadDocumentAction { Progress = progress }));
-                if (upload != null)
-                {
-                    var thumbFileId = TLLong.Random();
-                    var thumbUpload = await _uploadDocumentManager.UploadFileAsync(thumbFileId, desiredName);
-                    if (thumbUpload != null)
-                    {
-                        var inputMedia = new TLInputMediaUploadedThumbDocument
-                        {
-                            File = upload.ToInputFile(),
-                            Thumb = thumbUpload.ToInputFile(),
-                            MimeType = document.MimeType,
-                            Caption = media.Caption,
-                            Attributes = new TLVector<TLDocumentAttributeBase>
-                            {
-                                new TLDocumentAttributeFilename
-                                {
-                                    FileName = file.Name
-                                }
-                            }
-                        };
-
-                        var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                    }
-                    //if (result.IsSucceeded)
-                    //{
-                    //    var update = result.Result as TLUpdates;
-                    //    if (update != null)
-                    //    {
-                    //        var newMessage = update.Updates.OfType<TLUpdateNewMessage>().FirstOrDefault();
-                    //        if (newMessage != null)
-                    //        {
-                    //            var newM = newMessage.Message as TLMessage;
-                    //            if (newM != null)
-                    //            {
-                    //                message.Media = newM.Media;
-                    //                message.RaisePropertyChanged(() => message.Media);
-                    //            }
-                    //        }
-                    //    }
-                    //}
-                }
-            });
-        }
-
-        public async Task SendVideoAsync(StorageFile file, string caption, bool round, VideoTransformEffectDefinition transform = null, MediaEncodingProfile profile = null)
-        {
-            var fileLocation = new TLFileLocation
-            {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.mp4", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            await file.CopyAndReplaceAsync(fileCache);
-
-            var basicProps = await fileCache.GetBasicPropertiesAsync();
-            var videoProps = await fileCache.Properties.GetVideoPropertiesAsync();
-            var thumbnailBase = await FileUtils.GetFileThumbnailAsync(file);
-            var thumbnail = thumbnailBase as TLPhotoSize;
-
-            var desiredName = string.Format("{0}_{1}_{2}.jpg", thumbnail.Location.VolumeId, thumbnail.Location.LocalId, thumbnail.Location.Secret);
-
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var videoWidth = (int)videoProps.Width;
-            var videoHeight = (int)videoProps.Height;
-
-            if (profile != null)
-            {
-                videoWidth = (int)profile.Video.Width;
-                videoHeight = (int)profile.Video.Height;
-            }
-
-            var document = new TLDocument
-            {
-                Id = 0,
-                AccessHash = 0,
-                Date = date,
-                Size = (int)basicProps.Size,
-                MimeType = fileCache.ContentType,
-                Thumb = thumbnail,
-                Attributes = new TLVector<TLDocumentAttributeBase>
-                {
-                    new TLDocumentAttributeFilename
-                    {
-                        FileName = file.Name
-                    },
-                    new TLDocumentAttributeVideo
-                    {
-                        Duration = (int)videoProps.Duration.TotalSeconds,
-                        W = videoWidth,
-                        H = videoHeight,
-                        IsRoundMessage = round
-                    }
-                }
-            };
-
-            var media = new TLMessageMediaDocument
-            {
-                Document = document,
-                Caption = caption
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
-            }
-
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-            {
-                if (transform != null && profile != null)
-                {
-                    await fileCache.RenameAsync(fileName + ".temp.mp4");
-                    var fileResult = await FileUtils.CreateTempFileAsync(fileName);
-
-                    var transcoder = new MediaTranscoder();
-                    transcoder.AddVideoEffect(transform.ActivatableClassId, true, transform.Properties);
-
-                    var prepare = await transcoder.PrepareFileTranscodeAsync(fileCache, fileResult, profile);
-                    await prepare.TranscodeAsync().AsTask(Upload(media.Document as TLDocument, progress => new TLSendMessageUploadDocumentAction { Progress = progress }, 0, 200.0));
-
-                    //await fileCache.DeleteAsync();
-                    fileCache = fileResult;
-
-                    thumbnailBase = await FileUtils.GetFileThumbnailAsync(fileCache);
-                    thumbnail = thumbnailBase as TLPhotoSize;
-
-                    desiredName = string.Format("{0}_{1}_{2}.jpg", thumbnail.Location.VolumeId, thumbnail.Location.LocalId, thumbnail.Location.Secret);
-                    document.Thumb = thumbnail;
-                }
-
-                var fileId = TLLong.Random();
-                var upload = await _uploadVideoManager.UploadFileAsync(fileId, fileCache.Name, false).AsTask(Upload(media.Document as TLDocument, progress => new TLSendMessageUploadDocumentAction { Progress = progress }, 0.5, 2.0));
-                if (upload != null)
-                {
-                    var thumbFileId = TLLong.Random();
-                    var thumbUpload = await _uploadDocumentManager.UploadFileAsync(thumbFileId, desiredName);
-                    if (thumbUpload != null)
-                    {
-                        var inputMedia = new TLInputMediaUploadedThumbDocument
-                        {
-                            File = upload.ToInputFile(),
-                            Thumb = thumbUpload.ToInputFile(),
-                            MimeType = document.MimeType,
-                            Caption = media.Caption,
-                            Attributes = document.Attributes
-                        };
-
-                        var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                    }
-                    //if (result.IsSucceeded)
-                    //{
-                    //    var update = result.Result as TLUpdates;
-                    //    if (update != null)
-                    //    {
-                    //        var newMessage = update.Updates.OfType<TLUpdateNewMessage>().FirstOrDefault();
-                    //        if (newMessage != null)
-                    //        {
-                    //            var newM = newMessage.Message as TLMessage;
-                    //            if (newM != null)
-                    //            {
-                    //                message.Media = newM.Media;
-                    //                message.RaisePropertyChanged(() => message.Media);
-                    //            }
-                    //        }
-                    //    }
-                    //}
-                }
-            });
-        }
-
-        public RelayCommand<StoragePhoto> SendPhotoCommand => new RelayCommand<StoragePhoto>(SendPhotoExecute);
-        private async void SendPhotoExecute(StoragePhoto file)
-        {
-            ObservableCollection<StorageMedia> storages = null;
-
-            if (file == null)
-            {
-                var picker = new FileOpenPicker();
-                picker.ViewMode = PickerViewMode.Thumbnail;
-                picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
-                picker.FileTypeFilter.AddRange(Constants.MediaTypes);
-
-                var files = await picker.PickMultipleFilesAsync();
-                if (files != null)
-                {
-                    storages = new ObservableCollection<StorageMedia>(files.Select(x => x.Name.EndsWith(".mp4") ? new StorageVideo(x) : (StorageMedia)new StoragePhoto(x)));
-                }
-            }
-            else
-            {
-                storages = new ObservableCollection<StorageMedia> { file };
-            }
-
-            if (storages != null && storages.Count > 0)
-            {
-                var dialog = new SendPhotosView { Items = storages, SelectedItem = storages[0] };
-                var dialogResult = await dialog.ShowAsync();
-                if (dialogResult == ContentDialogBaseResult.OK)
-                {
-                    foreach (var storage in dialog.Items)
-                    {
-                        if (storage is StoragePhoto)
-                        {
-                            await SendPhotoAsync(storage.File, storage.Caption);
-                        }
-                    }
-                }
-            }
-        }
-
-        public async void SendPhotoDrop(ObservableCollection<StorageFile> files)
-        {
-            ObservableCollection<StorageMedia> storages = null;
-
-            if (files != null)
-            {
-                storages = new ObservableCollection<StorageMedia>(files.Select(x => new StoragePhoto(x)));
-            }
-
-            if (storages != null && storages.Count > 0)
-            {
-                var dialog = new SendPhotosView { Items = storages, SelectedItem = storages[0] };
-                var dialogResult = await dialog.ShowAsync();
-                if (dialogResult == ContentDialogBaseResult.OK)
-                {
-                    foreach (var storage in dialog.Items)
-                    {
-                        await SendPhotoAsync(storage.File, storage.Caption);
-                    }
-                }
-            }
-        }
-
-        private async Task SendPhotoAsync(StorageFile file, string caption)
-        {
-            var fileLocation = new TLFileLocation
-            {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.jpg", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            var fileScale = await ImageHelper.ScaleJpegAsync(file, fileCache, 1280, 0.77);
-            if (fileScale == null && Path.GetExtension(file.Name).Equals(".gif"))
-            {
-                // TODO: animated gif!
-                await fileCache.DeleteAsync();
-                await SendGifAsync(file, caption);
                 return;
             }
 
-            var basicProps = await fileScale.GetBasicPropertiesAsync();
-            var imageProps = await fileScale.Properties.GetImagePropertiesAsync();
+            var reply = GetReply(true);
+            var input = new InputMessageDocument(await file.ToGeneratedAsync(), null, GetFormattedText(caption));
 
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
+            await SendMessageAsync(reply, input);
+        }
 
-            var photoSize = new TLPhotoSize
+        public class VideoConversion
+        {
+            public bool Transcode { get; set; }
+            public bool Mute { get; set; }
+            public uint Width { get; set; }
+            public uint Height { get; set; }
+            public uint Bitrate { get; set; }
+
+            public bool Transform { get; set; }
+            public MediaRotation Rotation { get; set; }
+            public Size OutputSize { get; set; }
+            public MediaMirroringOptions Mirror { get; set; }
+            public Rect CropRectangle { get; set; }
+        }
+
+        public async Task SendVideoAsync(StorageFile file, string caption, bool animated, bool asFile, int? ttl = null, MediaEncodingProfile profile = null, VideoTransformEffectDefinition transform = null)
+        {
+            var basicProps = await file.GetBasicPropertiesAsync();
+            var videoProps = await file.Properties.GetVideoPropertiesAsync();
+
+            //var thumbnail = await ImageHelper.GetVideoThumbnailAsync(file, videoProps, transform);
+
+            var videoWidth = (int)videoProps.GetWidth();
+            var videoHeight = (int)videoProps.GetHeight();
+
+            if (profile != null)
             {
-                Type = "y",
-                W = (int)imageProps.Width,
-                H = (int)imageProps.Height,
-                Location = fileLocation,
-                Size = (int)basicProps.Size
-            };
-
-            var photo = new TLPhoto
-            {
-                Id = 0,
-                AccessHash = 0,
-                Date = date,
-                Sizes = new TLVector<TLPhotoSizeBase> { photoSize }
-            };
-
-            var media = new TLMessageMediaPhoto
-            {
-                Photo = photo,
-                Caption = caption
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
+                videoWidth = videoProps.Orientation == VideoOrientation.Rotate180 || videoProps.Orientation == VideoOrientation.Normal ? (int)profile.Video.Width : (int)profile.Video.Height;
+                videoHeight = videoProps.Orientation == VideoOrientation.Rotate180 || videoProps.Orientation == VideoOrientation.Normal ? (int)profile.Video.Height : (int)profile.Video.Width;
             }
 
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
+            var conversion = new VideoConversion();
+            if (profile != null)
             {
-                var fileId = TLLong.Random();
-                var upload = await _uploadFileManager.UploadFileAsync(fileId, fileCache.Name, false).AsTask(Upload(photo, progress => new TLSendMessageUploadPhotoAction { Progress = progress }));
-                if (upload != null)
+                conversion.Transcode = true;
+                conversion.Mute = profile.Audio == null;
+                conversion.Width = profile.Video.Width;
+                conversion.Height = profile.Video.Height;
+                conversion.Bitrate = profile.Video.Bitrate;
+
+                if (transform != null)
                 {
-                    var inputMedia = new TLInputMediaUploadedPhoto
+                    conversion.Transform = true;
+                    conversion.Rotation = transform.Rotation;
+                    conversion.OutputSize = transform.OutputSize;
+                    conversion.Mirror = transform.Mirror;
+                    conversion.CropRectangle = transform.CropRectangle;
+                }
+            }
+
+            var generated = await file.ToGeneratedAsync("transcode#" + JsonConvert.SerializeObject(conversion));
+            var thumbnail = await file.ToThumbnailAsync(conversion, "thumbnail_transcode#" + JsonConvert.SerializeObject(conversion));
+
+            if (asFile)
+            {
+                var reply = GetReply(true);
+                var input = new InputMessageDocument(generated, thumbnail, GetFormattedText(caption));
+
+                await SendMessageAsync(reply, input);
+            }
+            else
+            {
+                if (profile != null && profile.Audio == null)
+                {
+                    var reply = GetReply(true);
+                    var input = new InputMessageAnimation(generated, thumbnail, (int)videoProps.Duration.TotalSeconds, videoWidth, videoHeight, GetFormattedText(caption));
+
+                    await SendMessageAsync(reply, input);
+                }
+                else
+                {
+                    var reply = GetReply(true);
+                    var input = new InputMessageVideo(generated, thumbnail, new int[0], (int)videoProps.Duration.TotalSeconds, videoWidth, videoHeight, true, GetFormattedText(caption), ttl ?? 0);
+
+                    await SendMessageAsync(reply, input);
+                }
+            }
+        }
+
+        public async Task SendVideoNoteAsync(StorageFile file, MediaEncodingProfile profile = null, VideoTransformEffectDefinition transform = null)
+        {
+            var basicProps = await file.GetBasicPropertiesAsync();
+            var videoProps = await file.Properties.GetVideoPropertiesAsync();
+
+            //var thumbnail = await ImageHelper.GetVideoThumbnailAsync(file, videoProps, transform);
+
+            var videoWidth = (int)videoProps.GetWidth();
+            var videoHeight = (int)videoProps.GetHeight();
+
+            if (profile != null)
+            {
+                videoWidth = videoProps.Orientation == VideoOrientation.Rotate180 || videoProps.Orientation == VideoOrientation.Normal ? (int)profile.Video.Width : (int)profile.Video.Height;
+                videoHeight = videoProps.Orientation == VideoOrientation.Rotate180 || videoProps.Orientation == VideoOrientation.Normal ? (int)profile.Video.Height : (int)profile.Video.Width;
+            }
+
+            var conversion = new VideoConversion();
+            if (profile != null)
+            {
+                conversion.Transcode = true;
+                conversion.Width = profile.Video.Width;
+                conversion.Height = profile.Video.Height;
+                conversion.Bitrate = profile.Video.Bitrate;
+
+                if (transform != null)
+                {
+                    conversion.Transform = true;
+                    conversion.Rotation = transform.Rotation;
+                    conversion.OutputSize = transform.OutputSize;
+                    conversion.Mirror = transform.Mirror;
+                    conversion.CropRectangle = transform.CropRectangle;
+                }
+            }
+
+            var generated = await file.ToGeneratedAsync("transcode#" + JsonConvert.SerializeObject(conversion));
+            var thumbnail = await file.ToThumbnailAsync(conversion, "thumbnail_transcode#" + JsonConvert.SerializeObject(conversion));
+
+            var reply = GetReply(true);
+            var input = new InputMessageVideoNote(generated, thumbnail, (int)videoProps.Duration.TotalSeconds, Math.Min(videoWidth, videoHeight));
+
+            await SendMessageAsync(reply, input);
+        }
+
+        public RelayCommand SendMediaCommand { get; }
+        private async void SendMediaExecute()
+        {
+            if (MediaLibrary.SelectedCount > 0)
+            {
+                if (Settings.IsSendGrouped && MediaLibrary.SelectedCount > 1)
+                {
+                    var items = MediaLibrary.Where(x => x.IsSelected).ToList();
+                    var group = new List<StorageMedia>(Math.Min(items.Count, 10));
+
+                    foreach (var item in items)
                     {
-                        Caption = media.Caption,
-                        File = upload.ToInputFile()
-                    };
+                        group.Add(item);
 
-                    var response = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                    //if (response.IsSucceeded && response.Result is TLUpdates updates)
+                        if (group.Count == 10)
+                        {
+                            await SendGroupedAsync(group);
+                            group = new List<StorageMedia>(Math.Min(items.Count, 10));
+                        }
+                    }
+
+                    if (group.Count > 0)
+                    {
+                        await SendGroupedAsync(group);
+                    }
+                }
+                else
+                {
+                    foreach (var storage in MediaLibrary.Where(x => x.IsSelected))
+                    {
+                        if (storage is StoragePhoto photo)
+                        {
+                            var storageFile = await photo.GetFileAsync();
+                            await SendPhotoAsync(storageFile, storage.Caption, storage.IsForceFile, storage.Ttl);
+                        }
+                        else if (storage is StorageVideo video)
+                        {
+                            await SendVideoAsync(storage.File, storage.Caption, video.IsMuted, storage.IsForceFile, storage.Ttl, await video.GetEncodingAsync(), video.GetTransform());
+                        }
+                    }
+                }
+
+                return;
+            }
+
+            var picker = new FileOpenPicker();
+            picker.ViewMode = PickerViewMode.Thumbnail;
+            picker.SuggestedStartLocation = PickerLocationId.PicturesLibrary;
+            picker.FileTypeFilter.AddRange(Constants.MediaTypes);
+
+            var files = await picker.PickMultipleFilesAsync();
+            if (files != null && files.Count > 0)
+            {
+                var storages = new ObservableCollection<StorageMedia>();
+
+                foreach (var file in files)
+                {
+                    var storage = await StorageMedia.CreateAsync(file, true);
+                    if (storage != null)
+                    {
+                        storages.Add(storage);
+                    }
+                }
+
+                SendMediaExecute(storages, storages[0]);
+            }
+        }
+
+        public async void SendMediaExecute(ObservableCollection<StorageMedia> media, StorageMedia selectedItem)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            if (media == null || media.IsEmpty())
+            {
+                return;
+            }
+
+            var dialog = new SendMediaView { ViewModel = this, IsTTLEnabled = chat.Type is ChatTypePrivate };
+            dialog.SetItems(media);
+            dialog.SelectedItem = selectedItem;
+
+            var dialogResult = await dialog.ShowAsync();
+
+            TextField?.FocusMaybe(FocusState.Keyboard);
+
+            if (dialogResult == ContentDialogBaseResult.OK)
+            {
+                var items = dialog.SelectedItems.ToList();
+                if (items.Count > 1 && dialog.IsGrouped)
+                {
+                    var group = new List<StorageMedia>(Math.Min(items.Count, 10));
+
+                    foreach (var item in items)
+                    {
+                        group.Add(item);
+
+                        if (group.Count == 10)
+                        {
+                            await SendGroupedAsync(group);
+                            group = new List<StorageMedia>(Math.Min(items.Count, 10));
+                        }
+                    }
+
+                    if (group.Count > 0)
+                    {
+                        await SendGroupedAsync(group);
+                    }
+                }
+                else
+                {
+                    foreach (var storage in items)
+                    {
+                        if (storage is StoragePhoto photo)
+                        {
+                            var storageFile = await photo.GetFileAsync();
+                            await SendPhotoAsync(storageFile, storage.Caption, storage.IsForceFile, storage.Ttl);
+                        }
+                        else if (storage is StorageVideo video)
+                        {
+                            await SendVideoAsync(storage.File, storage.Caption, video.IsMuted, storage.IsForceFile, storage.Ttl, await video.GetEncodingAsync(), video.GetTransform());
+                        }
+                    }
+                }
+            }
+        }
+
+        private async Task SendPhotoAsync(StorageFile file, string caption, bool asFile, int? ttl = null)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var size = await ImageHelper.GetScaleAsync(file);
+
+            var generated = await file.ToGeneratedAsync(asFile ? "copy" : "compress");
+            var thumbnail = default(InputThumbnail);
+
+            if (asFile)
+            {
+                var reply = GetReply(true);
+                var input = new InputMessageDocument(generated, thumbnail, GetFormattedText(caption));
+
+                await SendMessageAsync(reply, input);
+            }
+            else
+            {
+                var reply = GetReply(true);
+                var input = new InputMessagePhoto(generated, thumbnail, new int[0], size.Width, size.Height, GetFormattedText(caption), ttl ?? 0);
+
+                await SendMessageAsync(reply, input);
+            }
+        }
+
+        public async Task SendVoiceNoteAsync(StorageFile file, int duration, string caption)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var reply = GetReply(true);
+            var input = new InputMessageVoiceNote(await file.ToGeneratedAsync(), duration, new byte[0], GetFormattedText(caption));
+
+            await SendMessageAsync(reply, input);
+        }
+
+        public RelayCommand SendContactCommand { get; }
+        private async void SendContactExecute()
+        {
+            var picker = new ContactPicker();
+            picker.SelectionMode = ContactSelectionMode.Fields;
+            picker.DesiredFieldsWithContactFieldType.Add(ContactFieldType.PhoneNumber);
+
+            var picked = await picker.PickContactAsync();
+            if (picked != null)
+            {
+                Telegram.Td.Api.Contact contact = null;
+
+                var annotationStore = await ContactManager.RequestAnnotationStoreAsync(ContactAnnotationStoreAccessType.AppAnnotationsReadWrite);
+                var store = await ContactManager.RequestStoreAsync(ContactStoreAccessType.AppContactsReadWrite);
+                if (store != null && annotationStore != null)
+                {
+                    var full = await store.GetContactAsync(picked.Id);
+                    if (full != null)
+                    {
+                        var annotations = await annotationStore.FindAnnotationsForContactAsync(full);
+
+                        var first = annotations.FirstOrDefault();
+                        if (first != null)
+                        {
+                            var remote = first.RemoteId;
+                            if (int.TryParse(remote.Substring(1), out int userId))
+                            {
+                                var user = ProtoService.GetUser(userId);
+                                if (user != null)
+                                {
+                                    contact = new Telegram.Td.Api.Contact(user.PhoneNumber, user.FirstName, user.LanguageCode, user.Id);
+                                }
+                            }
+                        }
+
+                        //contact = full;
+                    }
+                }
+
+                if (contact == null)
+                {
+                    var phone = picked.Phones.FirstOrDefault();
+                    if (phone == null)
+                    {
+                        return;
+                    }
+
+                    contact = new Telegram.Td.Api.Contact(phone.Number, picked.FirstName, picked.LastName, 0);
+                }
+
+                if (contact != null)
+                {
+                    await SendContactAsync(contact);
+                }
+            }
+        }
+
+        public Task<BaseObject> SendContactAsync(Telegram.Td.Api.Contact contact)
+        {
+            return SendMessageAsync(0, new InputMessageContact(contact));
+        }
+
+        private Task<BaseObject> SendMessageAsync(long replyToMessageId, InputMessageContent inputMessageContent)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return null;
+            }
+
+            return ProtoService.SendAsync(new SendMessage(chat.Id, replyToMessageId, false, false, null, inputMessageContent));
+        }
+
+        public RelayCommand SendLocationCommand { get; }
+        private async void SendLocationExecute()
+        {
+            var page = new DialogShareLocationPage();
+
+            var dialog = new ContentDialogBase();
+            dialog.Content = page;
+
+            page.Dialog = dialog;
+            //page.LiveLocation = !_liveLocationService.IsTracking(Peer.ToPeer());
+
+            var confirm = await dialog.ShowAsync();
+            if (confirm == ContentDialogBaseResult.OK)
+            {
+                var reply = GetReply(true);
+                var input = page.Media;
+
+                await SendMessageAsync(reply, input);
+
+                //if (page.Media is TLMessageMediaVenue venue)
+                //{
+                //    await SendGeoAsync(venue);
+                //}
+                //else if (page.Media is TLMessageMediaGeoLive geoLive)
+                //{
+                //    if (geoLive.Geo == null || geoLive.Period == 0 || _liveLocationService.IsTracking(Peer.ToPeer()))
+                //    {
+                //        _liveLocationService.StopTracking(Peer.ToPeer());
+                //    }
+                //    else
+                //    {
+                //        await SendGeoAsync(geoLive);
+                //    }
+                //}
+                //else if (page.Media is TLMessageMediaGeo geo && geo.Geo is TLGeoPoint geoPoint)
+                //{
+                //    await SendGeoAsync(geoPoint.Lat, geoPoint.Long);
+                //}
+            }
+
+            //NavigationService.Navigate(typeof(DialogSendLocationPage));
+        }
+
+        //public Task<bool> SendGeoAsync(TLMessageMediaGeoLive media)
+        //{
+        //    var tsc = new TaskCompletionSource<bool>();
+        //    var date = TLUtils.DateToUniversalTimeTLInt(DateTime.Now);
+
+        //    //var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), true, true, date, string.Empty, media, 0L, null);
+
+        //    //var previousMessage = InsertSendingMessage(message);
+        //    //CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
+        //    //{
+        //    //    var inputMedia = media.ToInputMedia();
+
+        //    //    var result = await LegacyService.SendMediaAsync(Peer, inputMedia, message);
+        //    //    if (result.IsSucceeded)
+        //    //    {
+        //    //        tsc.SetResult(true);
+        //    //        await _liveLocationService.TrackAsync(message);
+        //    //    }
+        //    //    else
+        //    //    {
+        //    //        tsc.SetResult(false);
+        //    //    }
+        //    //});
+
+        //    return tsc.Task;
+        //}
+
+        private async Task<BaseObject> SendGroupedAsync(ICollection<StorageMedia> items)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return null;
+            }
+
+            var reply = GetReply(true);
+            var operations = new List<InputMessageContent>();
+
+            foreach (var item in items)
+            {
+                if (item is StoragePhoto photo)
+                {
+                    var file = await photo.GetFileAsync();
+
+                    var token = StorageApplicationPermissions.FutureAccessList.Enqueue(file);
+                    var props = await file.GetBasicPropertiesAsync();
+                    var size = await ImageHelper.GetScaleAsync(file);
+
+                    var input = new InputMessagePhoto(new InputFileGenerated(file.Path, "compress", (int)props.Size), null, new int[0], size.Width, size.Height, GetFormattedText(photo.Caption), photo.Ttl ?? 0);
+
+                    operations.Add(input);
+                }
+                else if (item is StorageVideo video)
+                {
+                    //var op = await PrepareVideoAsync(video.File, video.Caption, false, video.IsMuted, groupedId, await video.GetEncodingAsync(), video.GetTransform());
+                    //if (op.message != null && op.operation != null)
                     //{
-                    //    TLPhoto newPhoto = null;
-
-                    //    var newMessageUpdate = updates.Updates.FirstOrDefault(x => x is TLUpdateNewMessage) as TLUpdateNewMessage;
-                    //    if (newMessageUpdate != null && newMessageUpdate.Message is TLMessage newMessage && newMessage.Media is TLMessageMediaPhoto newPhotoMedia)
-                    //    {
-                    //        newPhoto = newPhotoMedia.Photo as TLPhoto;
-                    //    }
-
-                    //    var newChannelMessageUpdate = updates.Updates.FirstOrDefault(x => x is TLUpdateNewChannelMessage) as TLUpdateNewChannelMessage;
-                    //    if (newChannelMessageUpdate != null && newMessageUpdate.Message is TLMessage newChannelMessage && newChannelMessage.Media is TLMessageMediaPhoto newChannelPhotoMedia)
-                    //    {
-                    //        newPhoto = newChannelPhotoMedia.Photo as TLPhoto;
-                    //    }
-
-                    //    if (newPhoto != null && newPhoto.Full is TLPhotoSize newFull && newFull.Location is TLFileLocation newLocation)
-                    //    {
-                    //        var newFileName = string.Format("{0}_{1}_{2}.jpg", newLocation.VolumeId, newLocation.LocalId, newLocation.Secret);
-                    //        var newFile = await FileUtils.CreateTempFileAsync(newFileName);
-                    //        await fileCache.CopyAndReplaceAsync(newFile);
-                    //    }
+                    //    operations.Add(op);
                     //}
                 }
-            });
-        }
-
-        private async Task SendGifAsync(StorageFile file, string caption)
-        {
-            var fileLocation = new TLFileLocation
-            {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.gif", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            await file.CopyAndReplaceAsync(fileCache);
-
-            var basicProps = await fileCache.GetBasicPropertiesAsync();
-            var imageProps = await fileCache.Properties.GetImagePropertiesAsync();
-
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var media = new TLMessageMediaDocument
-            {
-                // TODO: Document = ...
-                Caption = caption
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
             }
 
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-            {
-                var fileId = TLLong.Random();
-                var upload = await _uploadDocumentManager.UploadFileAsync(fileId, fileName, false).AsTask(media.Document.Upload());
-                if (upload != null)
-                {
-                    var inputMedia = new TLInputMediaUploadedDocument
-                    {
-                        File = upload.ToInputFile(),
-                        MimeType = "image/gif",
-                        Caption = media.Caption,
-                        Attributes = new TLVector<TLDocumentAttributeBase>
-                        {
-                            new TLDocumentAttributeAnimated(),
-                            new TLDocumentAttributeImageSize
-                            {
-                                W = (int)imageProps.Width,
-                                H = (int)imageProps.Height,
-                            }
-                        }
-                    };
-
-                    var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                }
-            });
+            return await ProtoService.SendAsync(new SendMessageAlbum(chat.Id, reply, false, false, operations));
         }
 
-        public async Task SendAudioAsync(StorageFile file, int duration, bool voice, string title, string performer, string caption)
+        private FormattedText GetFormattedText(string text)
         {
-            var fileLocation = new TLFileLocation
+            if (text == null)
             {
-                VolumeId = TLLong.Random(),
-                LocalId = TLInt.Random(),
-                Secret = TLLong.Random(),
-                DCId = 0
-            };
-
-            var fileName = string.Format("{0}_{1}_{2}.ogg", fileLocation.VolumeId, fileLocation.LocalId, fileLocation.Secret);
-            var fileCache = await FileUtils.CreateTempFileAsync(fileName);
-
-            await file.CopyAndReplaceAsync(fileCache);
-
-            var basicProps = await fileCache.GetBasicPropertiesAsync();
-            var imageProps = await fileCache.Properties.GetImagePropertiesAsync();
-
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var media = new TLMessageMediaDocument
-            {
-                Caption = caption,
-                Document = new TLDocument
-                {
-                    Id = TLLong.Random(),
-                    AccessHash = TLLong.Random(),
-                    Date = date,
-                    MimeType = "audio/ogg",
-                    Size = (int)basicProps.Size,
-                    Thumb = new TLPhotoSizeEmpty
-                    {
-                        Type = string.Empty
-                    },
-                    Version = 0,
-                    DCId = 0,
-                    Attributes = new TLVector<TLDocumentAttributeBase>
-                    {
-                        new TLDocumentAttributeAudio
-                        {
-                            IsVoice = voice,
-                            Duration = duration,
-                            Title = title,
-                            Performer = performer
-                        }
-                    }
-                }
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
+                return new FormattedText();
             }
 
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
+            text = text.Format();
+
+            var entities = Markdown.Parse(ProtoService, ref text);
+            if (entities == null)
             {
-                var fileId = TLLong.Random();
-                var upload = await _uploadAudioManager.UploadFileAsync(fileId, fileName, false).AsTask(Upload(media.Document as TLDocument, progress => new TLSendMessageUploadAudioAction { Progress = progress }));
-                if (upload != null)
-                {
-                    var inputMedia = new TLInputMediaUploadedDocument
-                    {
-                        File = upload.ToInputFile(),
-                        MimeType = "audio/ogg",
-                        Caption = media.Caption,
-                        Attributes = new TLVector<TLDocumentAttributeBase>
-                        {
-                            new TLDocumentAttributeAudio
-                            {
-                                IsVoice = voice,
-                                Duration = duration,
-                                Title = title,
-                                Performer = performer
-                            }
-                        }
-                    };
-
-                    var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                }
-            });
-        }
-
-        public Task<bool> SendContactAsync(TLUser user)
-        {
-            var tsc = new TaskCompletionSource<bool>();
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var media = new TLMessageMediaContact
-            {
-                PhoneNumber = user.Phone,
-                FirstName = user.FirstName,
-                LastName = user.LastName,
-                UserId = user.Id,
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
+                entities = new List<TextEntity>();
             }
 
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-            {
-                var inputMedia = new TLInputMediaContact
-                {
-                    PhoneNumber = user.Phone,
-                    FirstName = user.FirstName,
-                    LastName = user.LastName
-                };
+            return new FormattedText(text, entities);
 
-                var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                if (result.IsSucceeded)
-                {
-                    tsc.SetResult(true);
-                }
-                else
-                {
-                    tsc.SetResult(false);
-                }
-            });
-
-            return tsc.Task;
-        }
-
-        public RelayCommand SendLocationCommand => new RelayCommand(SendLocationExecute);
-        private void SendLocationExecute()
-        {
-            NavigationService.Navigate(typeof(DialogSendLocationPage));
-        }
-
-        public Task<bool> SendGeoPointAsync(double latitude, double longitude)
-        {
-            var tsc = new TaskCompletionSource<bool>();
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            var media = new TLMessageMediaGeo
-            {
-                Geo = new TLGeoPoint
-                {
-                    Lat = latitude,
-                    Long = longitude
-                }
-            };
-
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, string.Empty, media, TLLong.Random(), null);
-
-            if (Reply != null)
-            {
-                message.HasReplyToMsgId = true;
-                message.ReplyToMsgId = Reply.Id;
-                message.Reply = Reply;
-                Reply = null;
-            }
-
-            var previousMessage = InsertSendingMessage(message);
-            CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
-            {
-                var inputMedia = new TLInputMediaGeoPoint
-                {
-                    GeoPoint = new TLInputGeoPoint
-                    {
-                        Lat = latitude,
-                        Long = longitude
-                    }
-                };
-
-                var result = await ProtoService.SendMediaAsync(Peer, inputMedia, message);
-                if (result.IsSucceeded)
-                {
-                    tsc.SetResult(true);
-                }
-                else
-                {
-                    tsc.SetResult(false);
-                }
-            });
-
-            return tsc.Task;
+            //return ProtoService.Execute(new ParseTextEntities(text.Format(), new TextParseModeMarkdown())) as FormattedText;
         }
     }
 }

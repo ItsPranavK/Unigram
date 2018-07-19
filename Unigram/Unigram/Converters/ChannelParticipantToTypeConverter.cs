@@ -3,31 +3,28 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
+using Unigram.Common;
+using Unigram.Services;
 using Windows.UI.Xaml.Data;
 
 namespace Unigram.Converters
 {
-    public class ChannelParticipantToTypeConverter : IValueConverter
+    public class ChannelParticipantToTypeConverter
     {
-        public object Convert(object value, Type targetType, object parameter, string language)
+        public static string Convert(IProtoService protoService, ChatMember member)
         {
-            switch (value)
+            switch (member.Status)
             {
-                case TLChannelParticipantCreator creator:
-                    return "Creator";
-                case TLChannelParticipantModerator moderator:
-                case TLChannelParticipantEditor editor:
-                    return "Admin";
-                case TLChannelParticipant participant:
+                case ChatMemberStatusAdministrator administrator:
+                    return string.Format(Strings.Resources.EditAdminPromotedBy, protoService.GetUser(member.InviterUserId).GetFullName());
+                case ChatMemberStatusRestricted restricted:
+                    return string.Format(Strings.Resources.UserRestrictionsBy, protoService.GetUser(member.InviterUserId).GetFullName());
+                case ChatMemberStatusBanned banned:
+                    return string.Format(Strings.Resources.UserRestrictionsBy, protoService.GetUser(member.InviterUserId).GetFullName());
                 default:
-                    return "User";
+                    return LastSeenConverter.GetLabel(protoService.GetUser(member.UserId), false);
             }
-        }
-
-        public object ConvertBack(object value, Type targetType, object parameter, string language)
-        {
-            throw new NotImplementedException();
         }
     }
 }

@@ -22,6 +22,10 @@ namespace Unigram.Controls.Views
         public PhoneCallRatingView()
         {
             this.InitializeComponent();
+
+            Title = Strings.Resources.AppName;
+            PrimaryButtonText = Strings.Resources.OK;
+            SecondaryButtonText = Strings.Resources.Cancel;
         }
 
         private void ContentDialog_PrimaryButtonClick(ContentDialog sender, ContentDialogButtonClickEventArgs args)

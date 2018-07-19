@@ -1,122 +1,240 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
-using Unigram.Collections;
-using Unigram.Common;
-using Windows.UI.Xaml.Navigation;
-using Template10.Common;
-using Telegram.Api.Helpers;
-using Unigram.Core.Services;
-using Telegram.Api.Services.Updates;
-using Telegram.Api.Transport;
-using Telegram.Api.Services.Connection;
-using System.Threading;
-using System.Collections.ObjectModel;
-using System.Collections.Specialized;
 using System.Collections;
-using System.ComponentModel;
-using Windows.UI.Xaml;
-using Unigram.Converters;
-using Windows.UI.Xaml.Media;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
-using Telegram.Api.Services.FileManager;
-using Windows.Storage.Pickers;
-using System.IO;
-using Windows.Storage;
-using System.Runtime.InteropServices.WindowsRuntime;
-using Unigram.Helpers;
-using Unigram.Controls.Views;
-using Unigram.Core.Models;
+using System.Globalization;
+using System.Linq;
+using System.Net;
+using System.Threading.Tasks;
+using Telegram.Td.Api;
+using Template10.Common;
+using Template10.Services.NavigationService;
+using Unigram.Common;
 using Unigram.Controls;
-using Unigram.Core.Helpers;
-using Org.BouncyCastle.Security;
-using Unigram.Core;
+using Unigram.Controls.Views;
+using Unigram.Converters;
+using Unigram.Core.Common;
+using Unigram.Core.Services;
+using Unigram.Native.Tasks;
+using Unigram.Entities;
 using Unigram.Services;
-using Windows.Storage.FileProperties;
-using Windows.System;
-using Windows.UI.Xaml.Controls;
-using Windows.UI.Popups;
-using Telegram.Api.TL.Methods.Messages;
-using Telegram.Api;
+using Unigram.ViewModels.Delegates;
+using Unigram.ViewModels.Dialogs;
 using Unigram.Views;
-using Telegram.Api.TL.Methods.Phone;
+using Unigram.Views.Supergroups;
+using Windows.ApplicationModel;
 using Windows.ApplicationModel.Calls;
-using Unigram.Tasks;
-using Windows.Media.Effects;
-using Windows.Media.Transcoding;
-using Windows.Media.MediaProperties;
-using Telegram.Api.Services.Cache.EventArgs;
-using Windows.Foundation.Metadata;
+using Windows.Foundation;
+using Windows.UI.Notifications;
+using Windows.UI.StartScreen;
 using Windows.UI.Text;
+using Windows.UI.ViewManagement;
+using Windows.UI.Xaml;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Controls.Primitives;
+using Windows.UI.Xaml.Navigation;
 
 namespace Unigram.ViewModels
 {
-    public partial class DialogViewModel : UnigramViewModelBase
+    public partial class DialogViewModel : UnigramViewModelBase, IDelegable<IDialogDelegate>
     {
-        public MessageCollection Messages { get; private set; } = new MessageCollection();
-
-        private List<TLMessageCommonBase> _selectedMessages = new List<TLMessageCommonBase>();
-        public List<TLMessageCommonBase> SelectedMessages
+        private List<MessageViewModel> _selectedItems = new List<MessageViewModel>();
+        public List<MessageViewModel> SelectedItems
         {
             get
             {
-                return _selectedMessages;
+                return _selectedItems;
             }
             set
             {
-                Set(ref _selectedMessages, value);
+                Set(ref _selectedItems, value);
                 MessagesForwardCommand.RaiseCanExecuteChanged();
                 MessagesDeleteCommand.RaiseCanExecuteChanged();
+                MessagesCopyCommand.RaiseCanExecuteChanged();
+                MessagesReportCommand.RaiseCanExecuteChanged();
             }
         }
 
-        private readonly DialogStickersViewModel _stickers;
-        private readonly IStickersService _stickersService;
-        private readonly ILocationService _locationService;
-        private readonly IUploadFileManager _uploadFileManager;
-        private readonly IUploadAudioManager _uploadAudioManager;
-        private readonly IUploadDocumentManager _uploadDocumentManager;
-        private readonly IUploadVideoManager _uploadVideoManager;
-
-        public int participantCount = 0;
-        public int online = 0;
-
-        public DialogViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator, IUploadFileManager uploadFileManager, IUploadAudioManager uploadAudioManager, IUploadDocumentManager uploadDocumentManager, IUploadVideoManager uploadVideoManager, IStickersService stickersService, ILocationService locationService, DialogStickersViewModel stickers)
-            : base(protoService, cacheService, aggregator)
+        public void ExpandSelection(IEnumerable<MessageViewModel> vector)
         {
-            _uploadFileManager = uploadFileManager;
-            _uploadAudioManager = uploadAudioManager;
-            _uploadDocumentManager = uploadDocumentManager;
-            _uploadVideoManager = uploadVideoManager;
-            _stickersService = stickersService;
-            _locationService = locationService;
+            var messages = vector.ToList();
 
-            _stickers = stickers;
+            //for (int i = 0; i < messages.Count; i++)
+            //{
+            //    if (messages[i] is TLMessage message && message.Media is TLMessageMediaGroup groupMedia)
+            //    {
+            //        messages.RemoveAt(i);
+
+            //        for (int j = 0; j < groupMedia.Layout.Messages.Count; j++)
+            //        {
+            //            messages.Insert(i, groupMedia.Layout.Messages[j]);
+            //            i++;
+            //        }
+
+            //        i--;
+            //    }
+            //}
+
+            SelectedItems = messages;
         }
 
-        public DialogStickersViewModel Stickers { get { return _stickers; } }
-
-
-
-        private TLDialog _currentDialog;
-
-        private ITLDialogWith _with;
-        public ITLDialogWith With
+        public MediaLibraryCollection MediaLibrary
         {
             get
             {
-                return _with;
+                return MediaLibraryCollection.GetForCurrentView();
+            }
+        }
+
+        private readonly ConcurrentDictionary<long, MessageViewModel> _groupedMessages = new ConcurrentDictionary<long, MessageViewModel>();
+
+        private static readonly Dictionary<long, long> _scrollingIndex = new Dictionary<long, long>();
+        private static readonly Dictionary<long, double> _scrollingPixel = new Dictionary<long, double>();
+
+        private readonly DisposableMutex _loadMoreLock = new DisposableMutex();
+        private readonly DisposableMutex _insertLock = new DisposableMutex();
+
+        private readonly DialogStickersViewModel _stickers;
+        private readonly ILocationService _locationService;
+        private readonly ILiveLocationService _liveLocationService;
+        private readonly INotificationsService _pushService;
+        private readonly IPlaybackService _playbackService;
+
+        //private UserActivitySession _timelineSession;
+
+        public IDialogDelegate Delegate { get; set; }
+
+        public DialogViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, ILocationService locationService, ILiveLocationService liveLocationService, INotificationsService pushService, IPlaybackService playbackService)
+            : base(protoService, cacheService, settingsService, aggregator)
+        {
+            _locationService = locationService;
+            _liveLocationService = liveLocationService;
+            _pushService = pushService;
+            _playbackService = playbackService;
+
+            _stickers = new DialogStickersViewModel(protoService, cacheService, settingsService, aggregator);
+
+            _informativeTimer = new DispatcherTimer();
+            _informativeTimer.Interval = TimeSpan.FromSeconds(5);
+            _informativeTimer.Tick += (s, args) =>
+            {
+                _informativeTimer.Stop();
+                InformativeMessage = null;
+            };
+
+            NextMentionCommand = new RelayCommand(NextMentionExecute);
+            PreviousSliceCommand = new RelayCommand(PreviousSliceExecute);
+            ClearReplyCommand = new RelayCommand(ClearReplyExecute);
+            PinnedCommand = new RelayCommand(PinnedExecute);
+            JoinChannelCommand = new RelayCommand(JoinChannelExecute);
+            ToggleMuteCommand = new RelayCommand<bool>(ToggleMuteExecute);
+            MuteCommand = new RelayCommand(() => ToggleMuteExecute(false));
+            UnmuteCommand = new RelayCommand(() => ToggleMuteExecute(true));
+            ToggleSilentCommand = new RelayCommand(ToggleSilentExecute);
+            HideReportSpamCommand = new RelayCommand(HideReportSpamExecute);
+            ReportSpamCommand = new RelayCommand(ReportSpamExecute);
+            ReportCommand = new RelayCommand(ReportExecute);
+            OpenStickersCommand = new RelayCommand(OpenStickersExecute);
+            DialogDeleteCommand = new RelayCommand(DialogDeleteExecute);
+            DialogClearCommand = new RelayCommand(DialogClearExecute);
+            CallCommand = new RelayCommand(CallExecute);
+            UnpinMessageCommand = new RelayCommand(UnpinMessageExecute);
+            UnblockCommand = new RelayCommand(UnblockExecute);
+            ShareContactCommand = new RelayCommand(ShareContactExecute);
+            AddContactCommand = new RelayCommand(AddContactExecute);
+            PinChatCommand = new RelayCommand(PinChatExecute, CanExecutePinChatCommand);
+            UnpinChatCommand = new RelayCommand(UnpinChatExecute, CanUnpinChatExecute);
+            StartCommand = new RelayCommand(StartExecute);
+            SearchCommand = new RelayCommand(SearchExecute);
+            JumpDateCommand = new RelayCommand(JumpDateExecute);
+            GroupStickersCommand = new RelayCommand(GroupStickersExecute);
+            ReadMentionsCommand = new RelayCommand(ReadMentionsExecute);
+            SendCommand = new RelayCommand<string>(SendMessage);
+            SwitchCommand = new RelayCommand<string>(SwitchExecute);
+            SetTimerCommand = new RelayCommand(SetTimerExecute);
+            ActionCommand = new RelayCommand(ActionExecute);
+
+            MessagesForwardCommand = new RelayCommand(MessagesForwardExecute, MessagesForwardCanExecute);
+            MessagesDeleteCommand = new RelayCommand(MessagesDeleteExecute, MessagesDeleteCanExecute);
+            MessagesCopyCommand = new RelayCommand(MessagesCopyExecute, MessagesCopyCanExecute);
+            MessagesReportCommand = new RelayCommand(MessagesReportExecute, MessagesReportCanExecute);
+
+            MessageReplyLastCommand = new RelayCommand(MessageReplyLastExecute);
+            MessageReplyCommand = new RelayCommand<MessageViewModel>(MessageReplyExecute);
+            MessageDeleteCommand = new RelayCommand<MessageViewModel>(MessageDeleteExecute);
+            MessageForwardCommand = new RelayCommand<MessageViewModel>(MessageForwardExecute);
+            MessageShareCommand = new RelayCommand<MessageViewModel>(MessageShareExecute);
+            MessageSelectCommand = new RelayCommand<MessageViewModel>(MessageSelectExecute);
+            MessageCopyCommand = new RelayCommand<MessageViewModel>(MessageCopyExecute);
+            MessageCopyMediaCommand = new RelayCommand<MessageViewModel>(MessageCopyMediaExecute);
+            MessageCopyLinkCommand = new RelayCommand<MessageViewModel>(MessageCopyLinkExecute);
+            MessageEditLastCommand = new RelayCommand(MessageEditLastExecute);
+            MessageEditCommand = new RelayCommand<MessageViewModel>(MessageEditExecute);
+            MessagePinCommand = new RelayCommand<MessageViewModel>(MessagePinExecute);
+            MessageReportCommand = new RelayCommand<MessageViewModel>(MessageReportExecute);
+            MessageStickerPackInfoCommand = new RelayCommand<MessageViewModel>(MessageStickerPackInfoExecute);
+            MessageFaveStickerCommand = new RelayCommand<MessageViewModel>(MessageFaveStickerExecute);
+            MessageUnfaveStickerCommand = new RelayCommand<MessageViewModel>(MessageUnfaveStickerExecute);
+            MessageSaveMediaCommand = new RelayCommand<MessageViewModel>(MessageSaveMediaExecute);
+            MessageSaveDownloadCommand = new RelayCommand<MessageViewModel>(MessageSaveDownloadExecute);
+            MessageSaveAnimationCommand = new RelayCommand<MessageViewModel>(MessageSaveAnimationExecute);
+            MessageAddContactCommand = new RelayCommand<MessageViewModel>(MessageAddContactExecute);
+            MessageServiceCommand = new RelayCommand<MessageViewModel>(MessageServiceExecute);
+
+            SendStickerCommand = new RelayCommand<Sticker>(SendStickerExecute);
+            SendAnimationCommand = new RelayCommand<Animation>(SendAnimationExecute);
+            SendFileCommand = new RelayCommand(SendFileExecute);
+            SendMediaCommand = new RelayCommand(SendMediaExecute);
+            SendContactCommand = new RelayCommand(SendContactExecute);
+            SendLocationCommand = new RelayCommand(SendLocationExecute);
+
+            //Items = new LegacyMessageCollection();
+            //Items.CollectionChanged += (s, args) => IsEmpty = Items.Count == 0;
+
+            Aggregator.Subscribe(this);
+        }
+
+        //~DialogViewModel()
+        //{
+        //    Debug.WriteLine("Finalizing DialogViewModel");
+        //    Aggregator.Unsubscribe(this);
+
+        //    GC.Collect();
+        //}
+
+        public ItemClickEventHandler Sticker_Click;
+
+        public override IDispatcherWrapper Dispatcher
+        {
+            get => base.Dispatcher;
+            set
+            {
+                base.Dispatcher = value;
+                Stickers.Dispatcher = value;
+            }
+        }
+
+        public bool IsActive
+        {
+            get
+            {
+                return NavigationService?.IsPeerActive(_chatId) ?? false;
+            }
+        }
+
+        public DialogStickersViewModel Stickers => _stickers;
+
+        private Chat _chat;
+        public Chat Chat
+        {
+            get
+            {
+                return _chat;
             }
             set
             {
-                Set(ref _with, value);
-                RaisePropertyChanged(() => IsSilentVisible);
+                Set(ref _chat, value);
             }
         }
 
@@ -130,7 +248,6 @@ namespace Unigram.ViewModels
             set
             {
                 Set(ref _full, value);
-                RaisePropertyChanged(() => With);
                 RaisePropertyChanged(() => IsSilentVisible);
             }
         }
@@ -148,21 +265,43 @@ namespace Unigram.ViewModels
             }
         }
 
-        private TLInputPeerBase _peer;
-        public TLInputPeerBase Peer
+        private DialogSearchViewModel _search;
+        public DialogSearchViewModel Search
         {
             get
             {
-                return _peer;
+                return _search;
             }
             set
             {
-                Set(ref _peer, value);
+                Set(ref _search, value);
             }
         }
 
-        private TLMessageBase _pinnedMessage;
-        public TLMessageBase PinnedMessage
+        private string _accessToken;
+        public string AccessToken
+        {
+            get
+            {
+                return _accessToken;
+            }
+            set
+            {
+                Set(ref _accessToken, value);
+                RaisePropertyChanged(() => HasAccessToken);
+            }
+        }
+
+        public bool HasAccessToken
+        {
+            get
+            {
+                return (_accessToken != null || _isEmpty) && !_isLoadingNextSlice && !_isLoadingPreviousSlice;
+            }
+        }
+
+        private Message _pinnedMessage;
+        public Message PinnedMessage
         {
             get
             {
@@ -171,6 +310,27 @@ namespace Unigram.ViewModels
             set
             {
                 Set(ref _pinnedMessage, value);
+            }
+        }
+
+        private DispatcherTimer _informativeTimer;
+
+        private Message _informativeMessage;
+        public Message InformativeMessage
+        {
+            get
+            {
+                return _informativeMessage;
+            }
+            set
+            {
+                if (value != null)
+                {
+                    _informativeTimer.Stop();
+                    _informativeTimer.Start();
+                }
+
+                Set(ref _informativeMessage, value);
             }
         }
 
@@ -200,16 +360,29 @@ namespace Unigram.ViewModels
             }
         }
 
-        private ItemsUpdatingScrollMode _updatingScrollMode;
-        public ItemsUpdatingScrollMode UpdatingScrollMode
+        private bool _canPinChat;
+        public bool CanPinChat
         {
             get
             {
-                return _updatingScrollMode;
+                return _canPinChat;
             }
             set
             {
-                Set(ref _updatingScrollMode, value);
+                Set(ref _canPinChat, value);
+            }
+        }
+
+        private bool _canUnpinChat;
+        public bool CanUnpinChat
+        {
+            get
+            {
+                return _canUnpinChat;
+            }
+            set
+            {
+                Set(ref _canUnpinChat, value);
             }
         }
 
@@ -227,153 +400,395 @@ namespace Unigram.ViewModels
         }
 
         public BubbleTextBox TextField { get; set; }
+        public BubbleListView ListField { get; set; }
 
-        public void SetText(string text, TLVector<TLMessageEntityBase> entities = null, bool focus = false)
+        public void SetSelection(int start)
         {
-            if (string.IsNullOrEmpty(text))
+            var field = TextField;
+            if (field == null)
             {
-                TextField.Document.SetText(TextSetOptions.FormatRtf, @"{\rtf1\fbidis\ansi\ansicpg1252\deff0\nouicompat\deflang1040{\fonttbl{\f0\fnil Segoe UI;}}{\*\generator Riched20 10.0.14393}\viewkind4\uc1\pard\ltrpar\tx720\cf1\f0\fs23\lang1033}");
+                return;
+            }
+
+            field.Document.GetText(TextGetOptions.None, out string text);
+            field.Document.Selection.SetRange(start, text.Length);
+        }
+
+        public void SetText(FormattedText text, bool focus = false)
+        {
+            if (text == null)
+            {
+                SetText(null, null, focus);
             }
             else
             {
-                TextField.SetText(text, entities);
+                SetText(text.Text, text.Entities, focus);
+            }
+        }
+
+        public void SetText(string text, IList<TextEntity> entities = null, bool focus = false)
+        {
+            var field = TextField;
+            if (field == null)
+            {
+                return;
+            }
+
+            var chat = Chat;
+            if (chat != null && chat.Type is ChatTypeSupergroup super && super.IsChannel && !string.IsNullOrEmpty(text))
+            {
+                var supergroup = ProtoService.GetSupergroup(super.SupergroupId);
+                if (supergroup != null && !supergroup.CanPostMessages())
+                {
+                    return;
+                }
+            }
+
+            if (string.IsNullOrEmpty(text))
+            {
+                field.Document.SetText(TextSetOptions.FormatRtf, @"{\rtf1\fbidis\ansi\ansicpg1252\deff0\nouicompat\deflang1040{\fonttbl{\f0\fnil Segoe UI;}}{\*\generator Riched20 10.0.14393}\viewkind4\uc1\pard\ltrpar\tx720\cf1\f0\fs23\lang1033}");
+            }
+            else
+            {
+                field.SetText(text, entities);
             }
 
             if (focus)
             {
-                TextField.Focus(FocusState.Keyboard);
+                field.Focus(FocusState.Keyboard);
             }
+        }
+
+        public void SetScrollMode(ItemsUpdatingScrollMode mode, bool force)
+        {
+            var field = ListField;
+            if (field == null)
+            {
+                return;
+            }
+
+            field.SetScrollMode(mode, force);
         }
 
         public string GetText()
         {
-            TextField.Document.GetText(TextGetOptions.NoHidden, out string text);
+            var field = TextField;
+            if (field == null)
+            {
+                return null;
+            }
+
+            field.Document.GetText(TextGetOptions.NoHidden, out string text);
             return text;
         }
 
-        public bool IsFirstSliceLoaded { get; set; }
+        public bool IsEndReached()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return false;
+            }
+
+            var last = Items.LastOrDefault();
+            if (last == null)
+            {
+                return true;
+            }
+
+            return chat.LastMessage?.Id == last.Id;
+        }
+
+        public bool? IsFirstSliceLoaded { get; set; }
+
+        private bool? _isLastSliceLoaded;
+        public bool? IsLastSliceLoaded
+        {
+            get
+            {
+                return _isLastSliceLoaded;
+            }
+            set
+            {
+                Set(ref _isLastSliceLoaded, value);
+            }
+        }
+
+        private bool _isEmpty = true;
+        public bool IsEmpty
+        {
+            get
+            {
+                return _isEmpty && !_isLoadingNextSlice && !_isLoadingPreviousSlice;
+            }
+            set
+            {
+                Set(ref _isEmpty, value);
+                RaisePropertyChanged(() => HasAccessToken);
+            }
+        }
+
+        public override bool IsLoading
+        {
+            get
+            {
+                return _isLoadingNextSlice || _isLoadingPreviousSlice;
+            }
+            set
+            {
+                base.IsLoading = value;
+                RaisePropertyChanged(() => IsEmpty);
+                RaisePropertyChanged(() => HasAccessToken);
+            }
+        }
 
         private bool _isLoadingNextSlice;
         private bool _isLoadingPreviousSlice;
-        private Stack<int> _goBackStack = new Stack<int>();
 
-        public async Task LoadNextSliceAsync()
+        private Stack<long> _goBackStack = new Stack<long>();
+
+        public async Task LoadNextSliceAsync(bool force = false)
         {
-            if (_isLoadingNextSlice || _isLoadingPreviousSlice || _peer == null) return;
-            _isLoadingNextSlice = true;
-
-            UpdatingScrollMode = ItemsUpdatingScrollMode.KeepLastItemInView;
-
-            Debug.WriteLine("DialogViewModel: LoadNextSliceAsync");
-
-            var maxId = int.MaxValue;
-
-            for (int i = 0; i < Messages.Count; i++)
+            using (await _loadMoreLock.WaitAsync())
             {
-                if (Messages[i].Id != 0 && Messages[i].Id < maxId)
+                if (_isLoadingNextSlice || _isLoadingPreviousSlice || _chat == null || Items.Count < 1)
                 {
-                    maxId = Messages[i].Id;
+                    return;
                 }
+
+                _isLoadingNextSlice = true;
+                IsLoading = true;
+
+                Debug.WriteLine("DialogViewModel: LoadNextSliceAsync");
+
+                //var first = Items.FirstOrDefault(x => x.Id != 0);
+                //if (first is TLMessage firstMessage && firstMessage.Media is TLMessageMediaGroup groupMedia)
+                //{
+                //    first = groupMedia.Layout.Messages.FirstOrDefault();
+                //}
+
+                //var maxId = first?.Id ?? int.MaxValue;
+                var maxId = Items.FirstOrDefault().Id;
+                var limit = 50;
+
+                //for (int i = 0; i < Items.Count; i++)
+                //{
+                //    if (Items[i].Id != 0 && Items[i].Id < maxId)
+                //    {
+                //        maxId = Items[i].Id;
+                //    }
+                //}
+
+                Debug.WriteLine("DialogViewModel: LoadNextSliceAsync: Begin request");
+
+                //return;
+
+                var response = await ProtoService.SendAsync(new GetChatHistory(_chat.Id, maxId, 0, limit, false));
+                if (response is Telegram.Td.Api.Messages messages)
+                {
+                    if (messages.MessagesValue.Count > 0)
+                    {
+                        SetScrollMode(ItemsUpdatingScrollMode.KeepLastItemInView, force);
+                    }
+
+                    var replied = messages.MessagesValue.OrderByDescending(x => x.Id).Select(x => GetMessage(x)).ToList();
+                    ProcessFiles(_chat, replied);
+                    ProcessReplies(replied);
+
+                    //Items.InsertRange(0, replied);
+
+                    foreach (var message in replied)
+                    {
+                        Items.Insert(0, message);
+
+                        //var index = InsertMessageInOrder(Messages, message);
+                    }
+                }
+
+                _isLoadingNextSlice = false;
+                IsLoading = false;
+            }
+        }
+
+        public async Task LoadPreviousSliceAsync(bool force = false, bool reserved = false)
+        {
+            using (await _loadMoreLock.WaitAsync())
+            {
+                if (_isLoadingNextSlice || _isLoadingPreviousSlice || _chat == null || Items.Count < 1)
+                {
+                    return;
+                }
+
+
+                _isLoadingPreviousSlice = true;
+                IsLoading = true;
+
+                //if (last)
+                //{
+                //    UpdatingScrollMode = force ? UpdatingScrollMode.ForceKeepLastItemInView : UpdatingScrollMode.KeepLastItemInView;
+                //}
+                //else
+                //{
+                //    UpdatingScrollMode = force ? UpdatingScrollMode.ForceKeepItemsInView : UpdatingScrollMode.KeepItemsInView;
+                //}
+
+                Debug.WriteLine("DialogViewModel: LoadPreviousSliceAsync");
+
+                var maxId = Items.LastOrDefault().Id;
+                var limit = 50;
+
+                //for (int i = 0; i < Messages.Count; i++)
+                //{
+                //    if (Messages[i].Id != 0 && Messages[i].Id < maxId)
+                //    {
+                //        maxId = Messages[i].Id;
+                //    }
+                //}
+
+                var response = await ProtoService.SendAsync(new GetChatHistory(_chat.Id, maxId, -49, limit, false));
+                if (response is Telegram.Td.Api.Messages messages)
+                {
+                    if (messages.MessagesValue.Any(x => !Items.ContainsKey(x.Id)))
+                    {
+                        SetScrollMode(ItemsUpdatingScrollMode.KeepItemsInView, true);
+                    }
+                    else
+                    {
+                        SetScrollMode(ItemsUpdatingScrollMode.KeepLastItemInView, true);
+                    }
+
+                    var added = false;
+
+                    var replied = messages.MessagesValue.OrderBy(x => x.Id).Select(x => GetMessage(x)).ToList();
+                    ProcessFiles(_chat, replied);
+                    ProcessReplies(replied);
+
+                    foreach (var message in replied)
+                    {
+                        var index = InsertMessageInOrder(Items, message);
+                        if (index > -1)
+                        {
+                            added = true;
+                        }
+
+                        //Messages.Add(message);
+                    }
+
+                    IsFirstSliceLoaded = !added || IsEndReached();
+                }
+
+                _isLoadingPreviousSlice = false;
+                IsLoading = false;
+            }
+        }
+
+        private List<long> _mentions = new List<long>();
+        private long _lastMention;
+
+        public void SetLastViewedMention(long messageId)
+        {
+            _lastMention = messageId;
+        }
+
+        public RelayCommand NextMentionCommand { get; }
+        private async void NextMentionExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
             }
 
-            Debug.WriteLine("DialogViewModel: LoadNextSliceAsync: Begin request");
-
-            //return;
-
-            var result = await ProtoService.GetHistoryAsync(Peer, Peer.ToPeer(), true, 0, 0, maxId, 50);
-            if (result.IsSucceeded)
+            if (_mentions != null && _mentions.Count > 0)
             {
-                ProcessReplies(result.Result.Messages);
-
-                Debug.WriteLine("DialogViewModel: LoadNextSliceAsync: Replies processed");
-
-                //foreach (var item in result.Result.Messages.OrderByDescending(x => x.Date))
-                for (int i = 0; i < result.Result.Messages.Count; i++)
+                await LoadMessageSliceAsync(null, _mentions.RemoveLast());
+            }
+            else
+            {
+                long fromMessageId;
+                if (_lastMention != 0)
                 {
-                    var item = result.Result.Messages[i];
-                    Messages.Insert(0, item);
-                    //InsertMessage(item as TLMessageCommonBase);
+                    fromMessageId = _lastMention;
+                }
+                else
+                {
+                    var first = Items.FirstOrDefault();
+                    if (first != null)
+                    {
+                        fromMessageId = first.Id;
+                    }
+                    else
+                    {
+                        return;
+                    }
                 }
 
-                Debug.WriteLine("DialogViewModel: LoadNextSliceAsync: Items added");
-
-                //foreach (var item in result.Result.Messages.OrderBy(x => x.Date))
-                for (int i = result.Result.Messages.Count - 1; i >= 0; i--)
+                var response = await ProtoService.SendAsync(new SearchChatMessages(chat.Id, string.Empty, 0, fromMessageId, -9, 10, new SearchMessagesFilterUnreadMention()));
+                if (response is Messages messages)
                 {
-                    var item = result.Result.Messages[i];
-                    var message = item as TLMessage;
-                    if (message != null && !message.IsOut && message.HasFromId && message.HasReplyMarkup && message.ReplyMarkup != null)
+                    var stack = new List<long>();
+                    foreach (var message in messages.MessagesValue)
                     {
-                        var user = CacheService.GetUser(message.FromId) as TLUser;
-                        if (user != null && user.IsBot)
-                        {
-                            SetReplyMarkup(message);
-                        }
+                        stack.Add(message.Id);
+                    }
+
+                    if (stack.Count > 0)
+                    {
+                        _mentions = stack;
+                        NextMentionExecute();
                     }
                 }
             }
 
-            _isLoadingNextSlice = false;
-        }
-
-        public async Task LoadPreviousSliceAsync()
-        {
-            if (_isLoadingNextSlice || _isLoadingPreviousSlice || _peer == null) return;
-            _isLoadingPreviousSlice = true;
-
-            UpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
-
-            Debug.WriteLine("DialogViewModel: LoadPreviousSliceAsync");
-
-            var maxId = int.MaxValue;
-            var limit = 50;
-
-            //for (int i = 0; i < Messages.Count; i++)
+            //var dialog = _dialog;
+            //if (dialog == null)
             //{
-            //    if (Messages[i].Id != 0 && Messages[i].Id < maxId)
-            //    {
-            //        maxId = Messages[i].Id;
-            //    }
+            //    return;
             //}
 
-            maxId = Messages.LastOrDefault()?.Id ?? 1;
+            //var responsez = await LegacyService.GetUnreadMentionsAsync(_peer, 0, dialog.UnreadMentionsCount - 1, 1, 0, 0);
+            //if (responsez.IsSucceeded && responsez.Result is ITLMessages result)
+            //{
+            //    var count = 0;
+            //    if (responsez.Result is TLMessagesChannelMessages channelMessages)
+            //    {
+            //        count = channelMessages.Count;
+            //    }
 
-            var result = await ProtoService.GetHistoryAsync(Peer, Peer.ToPeer(), true, -limit, 0, maxId, limit);
-            if (result.IsSucceeded)
-            {
-                ProcessReplies(result.Result.Messages);
+            //    dialog.UnreadMentionsCount = count;
+            //    dialog.RaisePropertyChanged(() => dialog.UnreadMentionsCount);
 
-                //foreach (var item in result.Result.Messages.OrderBy(x => x.Date))
-                for (int i = result.Result.Messages.Count - 1; i >= 0; i--)
-                {
-                    var item = result.Result.Messages[i];
-                    if (item.Id > maxId)
-                    {
-                        Messages.Add(item);
-                    }
-                    //InsertMessage(item as TLMessageCommonBase);
-                }
+            //    //if (response.Result.Messages.IsEmpty())
+            //    //{
+            //    //    dialog.UnreadMentionsCount = 0;
+            //    //    dialog.RaisePropertyChanged(() => dialog.UnreadMentionsCount);
+            //    //    return;
+            //    //}
 
-                foreach (var item in result.Result.Messages.OrderBy(x => x.Date))
-                {
-                    var message = item as TLMessage;
-                    if (message != null && !message.IsOut && message.HasFromId && message.HasReplyMarkup && message.ReplyMarkup != null)
-                    {
-                        var user = CacheService.GetUser(message.FromId) as TLUser;
-                        if (user != null && user.IsBot)
-                        {
-                            SetReplyMarkup(message);
-                        }
-                    }
-                }
+            //    var commonMessage = result.Messages.FirstOrDefault() as TLMessageCommonBase;
+            //    if (commonMessage == null)
+            //    {
+            //        return;
+            //    }
 
-                IsFirstSliceLoaded = result.Result.Messages.Count < limit;
-            }
+            //    commonMessage.IsMediaUnread = false;
+            //    commonMessage.RaisePropertyChanged(() => commonMessage.IsMediaUnread);
 
-            _isLoadingPreviousSlice = false;
+            //    // DO NOT AWAIT
+            //    LoadMessageSliceAsync(null, commonMessage.Id);
+
+            //    if (With is TLChannel channel)
+            //    {
+            //        await LegacyService.ReadMessageContentsAsync(channel.ToInputChannel(), new TLVector<int> { commonMessage.Id });
+            //    }
+            //    else
+            //    {
+            //        await LegacyService.ReadMessageContentsAsync(new TLVector<int> { commonMessage.Id });
+            //    }
+            //}
         }
 
-        public RelayCommand PreviousSliceCommand => new RelayCommand(PreviousSliceExecute);
+        public RelayCommand PreviousSliceCommand { get; }
         private async void PreviousSliceExecute()
         {
             if (_goBackStack.Count > 0)
@@ -382,533 +797,729 @@ namespace Unigram.ViewModels
             }
             else
             {
-                Messages.Clear();
-                await LoadFirstSliceAsync();
+                var chat = _chat;
+                if (chat == null)
+                {
+                    return;
+                }
+
+                await LoadMessageSliceAsync(null, chat.LastReadInboxMessageId, SnapPointsAlignment.Near);
             }
         }
 
-        public async Task LoadMessageSliceAsync(int? previousId, int maxId)
+        public async Task LoadMessageSliceAsync(long? previousId, long maxId, SnapPointsAlignment alignment = SnapPointsAlignment.Center, double? pixel = null, bool second = false)
         {
-            if (_isLoadingNextSlice || _isLoadingPreviousSlice || _peer == null) return;
-            _isLoadingNextSlice = true;
-            _isLoadingPreviousSlice = true;
-
-            UpdatingScrollMode = ItemsUpdatingScrollMode.KeepItemsInView;
-
-            Debug.WriteLine("DialogViewModel: LoadMessageSliceAsync");
-
-            if (previousId.HasValue)
+            var already = Items.FirstOrDefault(x => x.Id == maxId);
+            if (already != null)
             {
-                _goBackStack.Push(previousId.Value);
-            }
-
-            Messages.Clear();
-
-            var offset = -50;
-            var limit = 50;
-
-            var result = await ProtoService.GetHistoryAsync(Peer, Peer.ToPeer(), true, offset, 0, maxId, limit);
-            if (result.IsSucceeded)
-            {
-                ProcessReplies(result.Result.Messages);
-
-                //foreach (var item in result.Result.Messages.OrderByDescending(x => x.Date))
-                for (int i = result.Result.Messages.Count - 1; i >= 0; i--)
+                var field = ListField;
+                if (field != null)
                 {
-                    var item = result.Result.Messages[i];
-                    Messages.Add(item);
-
-                    var message = item as TLMessage;
-                    if (message != null && !message.IsOut && message.HasFromId && message.HasReplyMarkup && message.ReplyMarkup != null)
-                    {
-                        var user = CacheService.GetUser(message.FromId) as TLUser;
-                        if (user != null && user.IsBot)
-                        {
-                            SetReplyMarkup(message);
-                        }
-                    }
+                    await field.ScrollToItem(already, alignment, alignment == SnapPointsAlignment.Center, pixel);
                 }
 
-                IsFirstSliceLoaded = result.Result.Messages.Count < limit;
+                return;
+            }
+            else if (second)
+            {
+                if (maxId == 0)
+                {
+                    ScrollToBottom(null);
+                }
+
+                //var max = _dialog?.UnreadCount > 0 ? _dialog.ReadInboxMaxId : int.MaxValue;
+                //var offset = _dialog?.UnreadCount > 0 && max > 0 ? -16 : 0;
+                //await LoadFirstSliceAsync(max, offset);
+                return;
             }
 
-            _isLoadingNextSlice = false;
-            _isLoadingPreviousSlice = false;
+            using (await _loadMoreLock.WaitAsync())
+            {
+                if (_isLoadingNextSlice || _isLoadingPreviousSlice || _chat == null)
+                {
+                    return;
+                }
+
+                _isLoadingNextSlice = true;
+                _isLoadingPreviousSlice = true;
+                IsLastSliceLoaded = null;
+                IsFirstSliceLoaded = null;
+                IsLoading = true;
+
+                Debug.WriteLine("DialogViewModel: LoadMessageSliceAsync");
+
+                if (previousId.HasValue)
+                {
+                    _goBackStack.Push(previousId.Value);
+                }
+
+                var offset = -25;
+                var limit = 50;
+
+                var response = await ProtoService.SendAsync(new GetChatHistory(_chat.Id, maxId, offset, limit, false));
+                if (response is Telegram.Td.Api.Messages messages)
+                {
+                    if (messages.MessagesValue.Count > 0)
+                    {
+                        SetScrollMode(ItemsUpdatingScrollMode.KeepLastItemInView, true);
+                    }
+
+                    var lastRead = false;
+
+                    var replied = messages.MessagesValue.OrderBy(x => x.Id).Select(x => GetMessage(x)).ToList();
+                    ProcessFiles(_chat, replied);
+                    ProcessReplies(replied);
+
+                    Items.ReplaceWith(replied);
+
+                    IsLastSliceLoaded = null;
+                    IsFirstSliceLoaded = IsEndReached();
+                }
+
+                _isLoadingNextSlice = false;
+                _isLoadingPreviousSlice = false;
+                IsLoading = false;
+            }
+
+            //await Task.Delay(200);
+            //await LoadNextSliceAsync(true);
+            await LoadMessageSliceAsync(null, maxId, alignment, pixel, true);
         }
 
         public async Task LoadDateSliceAsync(int dateOffset)
         {
-            var offset = -1;
-            var limit = 1;
-
-            var obj = new TLMessagesGetHistory { Peer = Peer, OffsetId = 0, OffsetDate = dateOffset - 1, AddOffset = offset, Limit = limit, MaxId = 0, MinId = 0 };
-            ProtoService.SendRequestAsync<TLMessagesMessagesBase>("messages.getHistory", obj, result =>
-            {
-                Execute.BeginOnUIThread(async () =>
-                {
-                    await LoadMessageSliceAsync(null, result.Messages[0].Id);
-                });
-            });
-
-            //var result = await ProtoService.GetHistoryAsync(Peer, Peer.ToPeer(), true, offset, dateOffset, 0, limit);
-            //if (result.IsSucceeded)
-            //{
-            //    await LoadMessageSliceAsync(null, result.Result.Messages[0].Id);
-            //}
-        }
-
-
-        public async Task LoadFirstSliceAsync()
-        {
-            if (_isLoadingNextSlice || _isLoadingPreviousSlice || _peer == null) return;
-            _isLoadingNextSlice = true;
-            _isLoadingPreviousSlice = true;
-
-            UpdatingScrollMode = _currentDialog?.UnreadCount > 0 ? ItemsUpdatingScrollMode.KeepItemsInView : ItemsUpdatingScrollMode.KeepLastItemInView;
-
-            Debug.WriteLine("DialogViewModel: LoadFirstSliceAsync");
-
-            var lastRead = true;
-
-            //var maxId = _currentDialog?.UnreadCount > 0 ? _currentDialog.ReadInboxMaxId : int.MaxValue;
-            var readMaxId = With as ITLReadMaxId;
-
-            //var maxId = readMaxId.ReadInboxMaxId > 0 ? readMaxId.ReadInboxMaxId : int.MaxValue;
-            //var offset = _currentDialog?.UnreadCount > 0 && maxId > 0 ? -51 : 0;
-
-            var maxId = _currentDialog?.UnreadCount > 0 ? _currentDialog.ReadInboxMaxId : int.MaxValue;
-            var offset = _currentDialog?.UnreadCount > 0 && maxId > 0 ? -16 : 0;
-            var limit = 15;
-
-            var result = await ProtoService.GetHistoryAsync(Peer, Peer.ToPeer(), true, offset, 0, maxId, limit);
-            if (result.IsSucceeded)
-            {
-                ProcessReplies(result.Result.Messages);
-
-                //foreach (var item in result.Result.Messages.OrderBy(x => x.Date))
-                for (int i = result.Result.Messages.Count - 1; i >= 0; i--)
-                {
-                    var item = result.Result.Messages[i];
-                    var message = item as TLMessageCommonBase;
-
-                    if (item.Id > maxId && lastRead && message != null && !message.IsOut)
-                    {
-                        var serviceMessage = new TLMessageService
-                        {
-                            FromId = SettingsHelper.UserId,
-                            ToId = Peer.ToPeer(),
-                            State = TLMessageState.Sending,
-                            IsOut = true,
-                            IsUnread = true,
-                            Date = item.Date,
-                            Action = new TLMessageActionUnreadMessages(),
-                            RandomId = TLLong.Random()
-                        };
-
-                        Messages.Add(serviceMessage);
-                        lastRead = false;
-                    }
-
-                    Messages.Add(item);
-                }
-
-                foreach (var item in result.Result.Messages.OrderBy(x => x.Date))
-                {
-                    var message = item as TLMessage;
-                    if (message != null && !message.IsOut && message.HasFromId && message.HasReplyMarkup && message.ReplyMarkup != null)
-                    {
-                        var user = CacheService.GetUser(message.FromId) as TLUser;
-                        if (user != null && user.IsBot)
-                        {
-                            SetReplyMarkup(message);
-                        }
-                    }
-                }
-
-                IsFirstSliceLoaded = result.Result.Messages.Count < limit;
-            }
-
-            _isLoadingNextSlice = false;
-            _isLoadingPreviousSlice = false;
-        }
-
-        public async void ProcessReplies(IList<TLMessageBase> messages)
-        {
-            var replyIds = new TLVector<int>();
-            var replyToMsgs = new List<TLMessageCommonBase>();
-
-            for (int i = 0; i < messages.Count; i++)
-            {
-                var message = messages[i] as TLMessageCommonBase;
-                if (message != null)
-                {
-                    var replyId = message.ReplyToMsgId;
-                    if (replyId != null && replyId.Value != 0)
-                    {
-                        var channelId = new int?();
-                        var channel = message.ToId as TLPeerChannel;
-                        if (channel != null)
-                        {
-                            channelId = channel.Id;
-                        }
-
-                        var reply = CacheService.GetMessage(replyId.Value, channelId);
-                        if (reply != null)
-                        {
-                            messages[i].Reply = reply;
-                            messages[i].RaisePropertyChanged(() => messages[i].Reply);
-                            messages[i].RaisePropertyChanged(() => messages[i].ReplyInfo);
-
-                            if (messages[i] is TLMessageService)
-                            {
-                                messages[i].RaisePropertyChanged(() => ((TLMessageService)messages[i]).Self);
-                            }
-                        }
-                        else
-                        {
-                            replyIds.Add(replyId.Value);
-                            replyToMsgs.Add(message);
-                        }
-                    }
-
-                    //if (message.NotListened && message.Media != null)
-                    //{
-                    //    message.Media.NotListened = true;
-                    //}
-                }
-            }
-
-            if (replyIds.Count > 0)
-            {
-                Task<MTProtoResponse<TLMessagesMessagesBase>> task = null;
-
-                if (Peer is TLInputPeerChannel)
-                {
-                    var first = replyToMsgs.FirstOrDefault();
-                    if (first.ToId is TLPeerChat)
-                    {
-                        task = ProtoService.GetMessagesAsync(replyIds);
-                    }
-                    else
-                    {
-                        var peer = Peer as TLInputPeerChannel;
-                        task = ProtoService.GetMessagesAsync(new TLInputChannel { ChannelId = peer.ChannelId, AccessHash = peer.AccessHash }, replyIds);
-                    }
-                }
-                else
-                {
-                    task = ProtoService.GetMessagesAsync(replyIds);
-                }
-
-                var result = await task;
-                if (result.IsSucceeded)
-                {
-                    CacheService.AddChats(result.Result.Chats, (results) => { });
-                    CacheService.AddUsers(result.Result.Users, (results) => { });
-
-                    for (int j = 0; j < result.Result.Messages.Count; j++)
-                    {
-                        for (int k = 0; k < replyToMsgs.Count; k++)
-                        {
-                            var message = replyToMsgs[k];
-                            if (message != null && message.ReplyToMsgId.Value == result.Result.Messages[j].Id)
-                            {
-                                replyToMsgs[k].Reply = result.Result.Messages[j];
-                                replyToMsgs[k].RaisePropertyChanged(() => replyToMsgs[k].Reply);
-                                replyToMsgs[k].RaisePropertyChanged(() => replyToMsgs[k].ReplyInfo);
-
-                                if (replyToMsgs[k] is TLMessageService)
-                                {
-                                    replyToMsgs[k].RaisePropertyChanged(() => ((TLMessageService)replyToMsgs[k]).Self);
-                                }
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    Execute.ShowDebugMessage("messages.getMessages error " + result.Error);
-                }
-            }
-        }
-
-        public override async Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
-        {
-            Messages.Clear();
-
-            var tuple = parameter as Tuple<TLPeerBase, int>;
-            if (tuple != null)
-            {
-                parameter = tuple.Item1;
-            }
-
-            var participant = GetParticipant(parameter as TLPeerBase);
-            if (participant == null)
+            var chat = _chat;
+            if (chat == null)
             {
                 return;
             }
 
-            Peer = participant.ToInputPeer();
-            With = participant;
-
-            Aggregator.Subscribe(this);
-
-            if (tuple != null)
+            var response = await ProtoService.SendAsync(new GetChatMessageByDate(chat.Id, dateOffset));
+            if (response is Message message)
             {
-                await LoadMessageSliceAsync(null, tuple.Item2);
-            }
-            else
-            {
-                await LoadFirstSliceAsync();
-            }
-
-            if (participant is TLUser user)
-            {
-                var full = CacheService.GetFullUser(user.Id);
-                if (full == null)
-                {
-                    var response = await ProtoService.GetFullUserAsync(new TLInputUser { UserId = user.Id, AccessHash = user.AccessHash ?? 0 });
-                    if (response.IsSucceeded)
-                    {
-                        full = response.Result;
-                    }
-                }
-
-                if (full != null)
-                {
-                    Full = full;
-                    IsPhoneCallsAvailable = full.IsPhoneCallsAvailable && ApiInformation.IsApiContractPresent("Windows.ApplicationModel.Calls.CallsVoipContract", 1);
-
-                    if (user.IsBot && full.HasBotInfo)
-                    {
-                        UnfilteredBotCommands = full.BotInfo.Commands.Select(x => Tuple.Create(user, x)).ToList();
-                    }
-                }
-            }
-            else if (participant is TLChannel channel)
-            {
-                if (channel.IsRestricted)
-                {
-                    var reason = channel.ExtractRestrictionReason();
-                    if (reason != null)
-                    {
-                        NavigationService.GoBack();
-
-                        await TLMessageDialog.ShowAsync(reason, "Sorry", "OK");
-                        return;
-                    }
-                }
-
-                IsPhoneCallsAvailable = false;
-
-                var full = CacheService.GetFullChat(channel.Id) as TLChannelFull;
-                if (full == null)
-                {
-                    var response = await ProtoService.GetFullChannelAsync(channel.ToInputChannel());
-                    if (response.IsSucceeded)
-                    {
-                        full = response.Result.FullChat as TLChannelFull;
-                    }
-                }
-
-                if (full != null)
-                {
-                    Full = full;
-
-                    var commands = new List<Tuple<TLUser, TLBotCommand>>();
-
-                    foreach (var info in full.BotInfo)
-                    {
-                        var bot = CacheService.GetUser(info.UserId) as TLUser;
-                        if (bot != null)
-                        {
-                            commands.AddRange(info.Commands.Select(x => Tuple.Create(bot, x)));
-                        }
-                    }
-
-                    UnfilteredBotCommands = commands;
-
-                    var channelFull = full as TLChannelFull;
-                    if (channelFull.HasPinnedMsgId)
-                    {
-                        var update = true;
-
-                        var appData = ApplicationData.Current.LocalSettings.CreateContainer("Channels", ApplicationDataCreateDisposition.Always);
-                        if (appData.Values.TryGetValue("Pinned" + channel.Id, out object pinnedObj))
-                        {
-                            var pinnedId = (int)pinnedObj;
-                            if (pinnedId == channelFull.PinnedMsgId)
-                            {
-                                update = false;
-                            }
-                        }
-
-                        var pinned = CacheService.GetMessage(channelFull.PinnedMsgId, channel.Id);
-                        if (pinned == null && update)
-                        {
-                            var y = await ProtoService.GetMessagesAsync(channel.ToInputChannel(), new TLVector<int>() { channelFull.PinnedMsgId ?? 0 });
-                            if (y.IsSucceeded)
-                            {
-                                pinned = y.Result.Messages.FirstOrDefault();
-                            }
-                        }
-
-                        if (pinned != null && update)
-                        {
-                            PinnedMessage = pinned;
-                        }
-                        else
-                        {
-                            PinnedMessage = null;
-                        }
-                    }
-                }
-
-            }
-            else if (participant is TLChat chat)
-            {
-                IsPhoneCallsAvailable = false;
-
-                var full = CacheService.GetFullChat(chat.Id) as TLChatFull;
-                if (full == null)
-                {
-                    var response = await ProtoService.GetFullChatAsync(chat.Id);
-                    if (response.IsSucceeded)
-                    {
-                        full = response.Result.FullChat as TLChatFull;
-                    }
-                }
-
-                if (full != null)
-                {
-                    Full = full;
-
-                    var commands = new List<Tuple<TLUser, TLBotCommand>>();
-
-                    foreach (var info in full.BotInfo)
-                    {
-                        var bot = CacheService.GetUser(info.UserId) as TLUser;
-                        if (bot != null)
-                        {
-                            commands.AddRange(info.Commands.Select(x => Tuple.Create(bot, x)));
-                        }
-                    }
-
-                    UnfilteredBotCommands = commands;
-                }
-                //    participantCount = chatDetails.Result.Users.Count;
-                //    if (participantCount < 200)
-                //    {
-                //        foreach (TLUserBase now in chatDetails.Result.Users)
-                //        {
-                //            TLUser tempUser = now as TLUser;
-                //            if (LastSeenHelper.GetLastSeen(tempUser).Item1.Equals("online") && !tempUser.IsSelf) online++;
-                //        }
-                //    }
-                //    else
-                //    {
-                //        online = -2;
-                //    }
-                //    LastSeen = participantCount + " members" + ((online > 0) ? (", " + online + " online") : "");
-                //}
-            }
-            else if (participant is TLChatForbidden forbiddenChat)
-            {
-                With = forbiddenChat;
-                Peer = new TLInputPeerChat { ChatId = forbiddenChat.Id };
-            }
-
-            _currentDialog = _currentDialog ?? CacheService.GetDialog(Peer.ToPeer());
-
-            var dialog = _currentDialog;
-            if (dialog != null && dialog.HasDraft)
-            {
-                if (dialog.Draft is TLDraftMessage draft)
-                {
-                    Aggregator.Publish(new TLUpdateDraftMessage { Draft = draft, Peer = Peer.ToPeer() });
-                    ProcessDraftReply(draft);
-                }
-            }
-
-            var settings = await ProtoService.GetPeerSettingsAsync(Peer);
-            if (settings.IsSucceeded)
-            {
-                IsReportSpam = settings.Result.IsReportSpam;
-            }
-
-            LastSeen = await GetSubtitle();
-
-            //#if !DEBUG
-            //#endif
-
-            if (dialog != null && Messages.Count > 0)
-            {
-                var unread = dialog.UnreadCount;
-                if (Peer is TLInputPeerChannel && participant is TLChannel channel)
-                {
-                    await ProtoService.ReadHistoryAsync(channel, dialog.TopMessage);
-                }
-                else
-                {
-                    await ProtoService.ReadHistoryAsync(Peer, dialog.TopMessage, 0);
-                }
-
-                var readPeer = With as ITLReadMaxId;
-                readPeer.ReadInboxMaxId = dialog.TopMessage;
-                dialog.ReadInboxMaxId = dialog.TopMessage;
-                dialog.UnreadCount = dialog.UnreadCount - unread;
-                dialog.RaisePropertyChanged(() => dialog.UnreadCount);
-            }
-
-            //StickersRecent();
-            //GifsSaved();
-
-            //var file = await KnownFolders.SavedPictures.CreateFileAsync("TEST.TXT", CreationCollisionOption.GenerateUniqueName);
-            //await FileIO.WriteTextAsync(file, DateTime.Now.ToString());
-
-            if (App.InMemoryState.ForwardMessages != null)
-            {
-                Reply = new TLMessagesContainter { FwdMessages = new TLVector<TLMessage>(App.InMemoryState.ForwardMessages) };
+                await LoadMessageSliceAsync(null, message.Id);
             }
         }
 
-        private async void ShowPinnedMessage(TLChannel channel)
+        public void ScrollToBottom(object item)
         {
-            if (channel == null) return;
-            if (channel.PinnedMsgId == null) return;
-            if (PinnedMessage != null && PinnedMessage.Id == channel.PinnedMsgId.Value) return;
-            if (channel.HiddenPinnedMsgId != null && channel.HiddenPinnedMsgId.Value == channel.PinnedMsgId.Value) return;
-            if (channel.PinnedMsgId.Value <= 0)
+            //if (IsFirstSliceLoaded)
             {
-                if (PinnedMessage != null)
+                var field = ListField;
+                if (field == null)
                 {
-                    PinnedMessage = null;
-                    return;
-                }
-            }
-            else
-            {
-                var messageBase = CacheService.GetMessage(channel.PinnedMsgId, channel.Id);
-                if (messageBase != null)
-                {
-                    PinnedMessage = messageBase;
                     return;
                 }
 
-                var respponse = await ProtoService.GetMessagesAsync(channel.ToInputChannel(), new TLVector<int> { channel.PinnedMsgId.Value });
-                if (respponse.IsSucceeded)
+                if (item == null)
                 {
-                    PinnedMessage = respponse.Result.Messages.FirstOrDefault(x => x.Id == channel.PinnedMsgId.Value);
+                    field.ScrollToBottom();
                 }
                 else
                 {
-                    Telegram.Api.Helpers.Execute.ShowDebugMessage("channels.getMessages error " + respponse.Error);
+                    field.ScrollIntoView(item, ScrollIntoViewAlignment.Leading);
+                }
+
+                field.SetScrollMode(ItemsUpdatingScrollMode.KeepLastItemInView, true);
+            }
+        }
+
+        public MessageCollection Items { get; } = new MessageCollection();
+
+        private void ProcessView(Chat chat, IList<MessageViewModel> messages)
+        {
+
+        }
+
+        private void ProcessFiles(Chat chat, IList<MessageViewModel> messages)
+        {
+            foreach (var message in messages)
+            {
+                var content = message.Content as object;
+                if (content is MessageAnimation animationMessage)
+                {
+                    content = animationMessage.Animation;
+                }
+                else if (content is MessageAudio audioMessage)
+                {
+                    content = audioMessage.Audio;
+                }
+                else if (content is MessageDocument documentMessage)
+                {
+                    content = documentMessage.Document;
+                }
+                else if (content is MessageGame gameMessage)
+                {
+                    if (gameMessage.Game.Animation != null)
+                    {
+                        content = gameMessage.Game.Animation;
+                    }
+                    else if (gameMessage.Game.Photo != null)
+                    {
+                        content = gameMessage.Game.Photo;
+                    }
+                }
+                else if (content is MessageInvoice invoiceMessage)
+                {
+                    content = invoiceMessage.Photo;
+                }
+                else if (content is MessageLocation locationMessage)
+                {
+                    content = locationMessage.Location;
+                }
+                else if (content is MessagePhoto photoMessage)
+                {
+                    content = photoMessage.Photo;
+                }
+                else if (content is MessageSticker stickerMessage)
+                {
+                    content = stickerMessage.Sticker;
+                }
+                else if (content is MessageText textMessage)
+                {
+                    if (textMessage?.WebPage?.Animation != null)
+                    {
+                        content = textMessage?.WebPage?.Animation;
+                    }
+                    else if (textMessage?.WebPage?.Document != null)
+                    {
+                        content = textMessage?.WebPage?.Document;
+                    }
+                    else if (textMessage?.WebPage?.Sticker != null)
+                    {
+                        content = textMessage?.WebPage?.Sticker;
+                    }
+                    else if (textMessage?.WebPage?.Video != null)
+                    {
+                        content = textMessage?.WebPage?.Video;
+                    }
+                    else if (textMessage?.WebPage?.VideoNote != null)
+                    {
+                        content = textMessage?.WebPage?.VideoNote;
+                    }
+                    // PHOTO SHOULD ALWAYS BE AT THE END!
+                    else if (textMessage?.WebPage?.Photo != null)
+                    {
+                        content = textMessage?.WebPage?.Photo;
+                    }
+                }
+                else if (content is MessageVideo videoMessage)
+                {
+                    content = videoMessage.Video;
+                }
+                else if (content is MessageVideoNote videoNoteMessage)
+                {
+                    content = videoNoteMessage.VideoNote;
+                }
+                else if (content is MessageVoiceNote voiceNoteMessage)
+                {
+                    content = voiceNoteMessage.VoiceNote;
+                }
+
+                if (content is Animation animation)
+                {
+                    if (animation.Thumbnail != null)
+                    {
+                        _filesMap[animation.Thumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[animation.AnimationValue.Id].Add(message);
+                }
+                else if (content is Audio audio)
+                {
+                    if (audio.AlbumCoverThumbnail != null)
+                    {
+                        _filesMap[audio.AlbumCoverThumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[audio.AudioValue.Id].Add(message);
+                }
+                else if (content is Document document)
+                {
+                    if (document.Thumbnail != null)
+                    {
+                        _filesMap[document.Thumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[document.DocumentValue.Id].Add(message);
+                }
+                else if (content is Photo photo)
+                {
+                    foreach (var size in photo.Sizes)
+                    {
+                        _filesMap[size.Photo.Id].Add(message);
+                    }
+                }
+                else if (content is Sticker sticker)
+                {
+                    if (sticker.Thumbnail != null)
+                    {
+                        _filesMap[sticker.Thumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[sticker.StickerValue.Id].Add(message);
+                }
+                else if (content is Video video)
+                {
+                    if (video.Thumbnail != null)
+                    {
+                        _filesMap[video.Thumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[video.VideoValue.Id].Add(message);
+                }
+                else if (content is VideoNote videoNote)
+                {
+                    if (videoNote.Thumbnail != null)
+                    {
+                        _filesMap[videoNote.Thumbnail.Photo.Id].Add(message);
+                    }
+
+                    _filesMap[videoNote.Video.Id].Add(message);
+                }
+                else if (content is VoiceNote voiceNote)
+                {
+                    _filesMap[voiceNote.Voice.Id].Add(message);
+                }
+
+                if (message.IsSaved() || ((chat.Type is ChatTypeBasicGroup || chat.Type is ChatTypeSupergroup) && !message.IsOutgoing && !message.IsChannelPost))
+                {
+                    if (message.IsSaved())
+                    {
+                        if (message.ForwardInfo is MessageForwardedFromUser fromUser)
+                        {
+                            var user = message.ProtoService.GetUser(fromUser.SenderUserId);
+                            if (user != null && user.ProfilePhoto != null)
+                            {
+                                _photosMap[user.ProfilePhoto.Small.Id].Add(message);
+                            }
+                        }
+                        else if (message.ForwardInfo is MessageForwardedPost post)
+                        {
+                            var fromChat = message.ProtoService.GetChat(post.ForwardedFromChatId);
+                            if (fromChat != null && fromChat.Photo != null)
+                            {
+                                _photosMap[fromChat.Photo.Small.Id].Add(message);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var user = message.GetSenderUser();
+                        if (user != null && user.ProfilePhoto != null)
+                        {
+                            _photosMap[user.ProfilePhoto.Small.Id].Add(message);
+                        }
+                    }
                 }
             }
         }
 
-        private List<TLDocument> _stickerPack;
-        public List<TLDocument> StickerPack
+        private async void ProcessReplies(IList<MessageViewModel> replied)
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            foreach (var message in replied)
+            {
+                message.ReplyToMessageState = ReplyToMessageState.Loading;
+            }
+
+            var replies = new List<long>();
+
+            foreach (var message in replied)
+            {
+                if (message.Content is MessagePinMessage pinMessage && !replies.Contains(pinMessage.MessageId))
+                {
+                    replies.Add(pinMessage.MessageId);
+                }
+                else if (message.Content is MessageGameScore gameScore && !replies.Contains(gameScore.GameMessageId))
+                {
+                    replies.Add(gameScore.GameMessageId);
+                }
+                else if (message.Content is MessagePaymentSuccessful paymentSuccessful && !replies.Contains(paymentSuccessful.InvoiceMessageId))
+                {
+                    replies.Add(paymentSuccessful.InvoiceMessageId);
+                }
+                else if (message.ReplyToMessageId != 0 && !replies.Contains(message.ReplyToMessageId))
+                {
+                    replies.Add(message.ReplyToMessageId);
+                }
+            }
+
+            var response = await ProtoService.SendAsync(new GetMessages(chat.Id, replies));
+            if (response is Telegram.Td.Api.Messages messages)
+            {
+                foreach (var message in replied)
+                {
+                    foreach (var result in messages.MessagesValue)
+                    {
+                        if (result == null)
+                        {
+                            continue;
+                        }
+
+                        if (message.Content is MessagePinMessage pinMessage && pinMessage.MessageId == result.Id)
+                        {
+                            message.ReplyToMessage = GetMessage(result);
+                            break;
+                        }
+                        else if (message.Content is MessageGameScore gameScore && gameScore.GameMessageId == result.Id)
+                        {
+                            message.ReplyToMessage = GetMessage(result);
+                            break;
+                        }
+                        else if (message.Content is MessagePaymentSuccessful paymentSuccessful && paymentSuccessful.InvoiceMessageId == result.Id)
+                        {
+                            message.ReplyToMessage = GetMessage(result);
+                            break;
+                        }
+                        else if (message.ReplyToMessageId == result.Id)
+                        {
+                            message.ReplyToMessage = GetMessage(result);
+                            break;
+                        }
+                    }
+
+                    if (message.ReplyToMessage == null)
+                    {
+                        message.ReplyToMessageState = ReplyToMessageState.Deleted;
+                    }
+                    else
+                    {
+                        message.ReplyToMessageState = ReplyToMessageState.None;
+                    }
+
+                    var text = message.Content is MessageText tex2 ? tex2.Text : null;
+                    Handle(message, bubble => bubble.UpdateMessageReply(message), service => service.UpdateMessage(message));
+
+                    //var container = ListField.ContainerFromItem(message) as ListViewItem;
+                    //if (container == null)
+                    //{
+                    //    return;
+                    //}
+
+                    //var content = container.ContentTemplateRoot as FrameworkElement;
+                    //if (content is Grid grid)
+                    //{
+                    //    content = grid.FindName("Bubble") as FrameworkElement;
+                    //}
+
+                    //if (content is MessageBubble bubble)
+                    //{
+                    //    bubble.UpdateMessageReply(message);
+                    //}
+                }
+            }
+        }
+
+        private long _chatId;
+
+        public override async Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
+        {
+            _chatId = (long)parameter;
+
+            var chat = ProtoService.GetChat((long)parameter);
+            if (chat == null)
+            {
+                chat = await ProtoService.SendAsync(new GetChat((long)parameter)) as Chat;
+            }
+
+            if (chat == null)
+            {
+                return;
+            }
+
+#if !DEBUG
+            if (chat.Type is ChatTypeSecret)
+            {
+                ApplicationView.GetForCurrentView().IsScreenCaptureEnabled = false;
+            }
+#endif
+
+            Chat = chat;
+            SetScrollMode(ItemsUpdatingScrollMode.KeepLastItemInView, true);
+
+#pragma warning disable CS4014
+            if (SessionState.TryGet("message_id", out long navigation))
+            {
+                SessionState.Remove("message_id");
+                LoadMessageSliceAsync(null, navigation);
+            }
+            else
+            {
+                if (_scrollingIndex.TryGetValue(chat.Id, out long start))
+                {
+                    if (_scrollingPixel.TryGetValue(chat.Id, out double pixel))
+                    {
+                        LoadMessageSliceAsync(null, start, SnapPointsAlignment.Far, pixel);
+                    }
+                    else
+                    {
+                        LoadMessageSliceAsync(null, start, SnapPointsAlignment.Far);
+                    }
+                }
+                else
+                {
+                    LoadMessageSliceAsync(null, chat.LastReadInboxMessageId, SnapPointsAlignment.Near);
+                }
+            }
+#pragma warning restore CS4014
+
+#if MOCKUP
+            int TodayDate(int hour, int minute)
+            {
+                return (int)Utils.DateTimeToUnixTimestamp(DateTime.Now.Date.AddHours(hour).AddMinutes(minute));
+            }
+
+            if (chat.Id == 10)
+            {
+                Items.Add(GetMessage(new Message(0, 0, chat.Id, null, true,  false, false, false, false, false, false, TodayDate(14, 58), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Hey Eileen", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(1, 0, chat.Id, null, true,  false, false, false, false, false, false, TodayDate(14, 59), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("So, why is Telegram cool?", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(2, 7, chat.Id, null, false, false, false, false, false, false, false, TodayDate(14, 59), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Well, look. Telegram is superfast and you can use it on all your devices at the same time - phones, tablets, even desktops.", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(3, 0, chat.Id, null, true,  false, false, false, false, false, false, TodayDate(14, 59), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("😴", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(4, 7, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 00), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("And it has secret chats, like this one, with end-to-end encryption!", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(5, 0, chat.Id, null, true,  false, false, false, false, false, false, TodayDate(15, 00), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("End encryption to what end??", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(6, 7, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 01), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Arrgh. Forget it. You can set a timer and send photos that will disappear when the time rush out. Yay!", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(7, 7, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 01), 0, null, 0, 0,  0, 0, string.Empty, 0, 0, new MessageChatSetTtl(15), null)));
+                Items.Add(GetMessage(new Message(8, 0, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 05), 0, null, 0, 15, 0, 0, string.Empty, 0, 0, new MessagePhoto(new Photo(0, false, new[] { new PhotoSize("t", new File(0, 0, 0, new LocalFile(System.IO.Path.Combine(Package.Current.InstalledLocation.Path, "Assets\\Mockup\\hot.png"), true, true, false, true, 0, 0), new RemoteFile()), 580, 596) }), new FormattedText(string.Empty, new TextEntity[0])), null)));
+
+                SetText("😱🙈👍");
+            }
+            else
+            {
+                //Items.Add(GetMessage(new Message(0, 11, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 25), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Yeah, that was my iPhone X", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(4, 11, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 25), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageSticker(new Sticker(0, 512, 512, "", false, null, null, new File(0, 0, 0, new LocalFile(System.IO.Path.Combine(Package.Current.InstalledLocation.Path, "Assets\\Mockup\\sticker0.webp"), true, true, false, true, 0, 0), null))), null)));
+                Items.Add(GetMessage(new Message(1, 9,  chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 26), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Are you sure it's safe here?", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(2, 7,  chat.Id, null, true,  false, false, false, false, false, false, TodayDate(15, 27), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Yes, sure, don't worry.", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(3, 13, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 27), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Hallo alle zusammen! Is the NSA reading this? 😀", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(4, 9,  chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 29), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageSticker(new Sticker(0, 512, 512, "", false, null, null, new File(0, 0, 0, new LocalFile(System.IO.Path.Combine(Package.Current.InstalledLocation.Path, "Assets\\Mockup\\sticker1.webp"), true, true, false, true, 0, 0), null))), null)));
+                Items.Add(GetMessage(new Message(5, 10, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 29), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Sorry, I'll have to publish this conversation on the web.", new TextEntity[0]), null), null)));
+                Items.Add(GetMessage(new Message(6, 10, chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 01), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageChatDeleteMember(10), null)));
+                Items.Add(GetMessage(new Message(7, 8,  chat.Id, null, false, false, false, false, false, false, false, TodayDate(15, 30), 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageText(new FormattedText("Wait, we could have made so much money on this!", new TextEntity[0]), null), null)));
+            }
+#endif
+
+            ProtoService.Send(new OpenChat(chat.Id));
+
+            Delegate?.UpdateChat(chat);
+
+            if (chat.Type is ChatTypePrivate privata)
+            {
+                var item = ProtoService.GetUser(privata.UserId);
+                var cache = ProtoService.GetUserFull(privata.UserId);
+
+                Delegate?.UpdateUser(chat, item, false);
+
+                if (cache == null)
+                {
+                    ProtoService.Send(new GetUserFullInfo(privata.UserId));
+                }
+                else
+                {
+                    Delegate?.UpdateUserFullInfo(chat, item, cache, false);
+                }
+            }
+            else if (chat.Type is ChatTypeSecret secretType)
+            {
+                var secret = ProtoService.GetSecretChat(secretType.SecretChatId);
+                var item = ProtoService.GetUser(secretType.UserId);
+                var cache = ProtoService.GetUserFull(secretType.UserId);
+
+                Delegate?.UpdateSecretChat(chat, secret);
+                Delegate?.UpdateUser(chat, item, true);
+
+                if (cache == null)
+                {
+                    ProtoService.Send(new GetUserFullInfo(secret.UserId));
+                }
+                else
+                {
+                    Delegate?.UpdateUserFullInfo(chat, item, cache, true);
+                }
+            }
+            else if (chat.Type is ChatTypeBasicGroup basic)
+            {
+                var item = ProtoService.GetBasicGroup(basic.BasicGroupId);
+                var cache = ProtoService.GetBasicGroupFull(basic.BasicGroupId);
+
+                Delegate?.UpdateBasicGroup(chat, item);
+
+                if (cache == null)
+                {
+                    ProtoService.Send(new GetBasicGroupFullInfo(basic.BasicGroupId));
+                }
+                else
+                {
+                    Delegate?.UpdateBasicGroupFullInfo(chat, item, cache);
+                }
+            }
+            else if (chat.Type is ChatTypeSupergroup super)
+            {
+                var item = ProtoService.GetSupergroup(super.SupergroupId);
+                var cache = ProtoService.GetSupergroupFull(super.SupergroupId);
+
+                Delegate?.UpdateSupergroup(chat, item);
+
+                if (cache == null)
+                {
+                    ProtoService.Send(new GetSupergroupFullInfo(super.SupergroupId));
+                }
+                else
+                {
+                    Delegate?.UpdateSupergroupFullInfo(chat, item, cache);
+                }
+            }
+
+            ShowReplyMarkup(chat);
+            ShowDraftMessage(chat);
+
+            ProtoService.Send(new GetChatReportSpamState(chat.Id), result =>
+            {
+                if (result is ChatReportSpamState spamState)
+                {
+                    BeginOnUIThread(() => IsReportSpam = spamState.CanReportSpam);
+                }
+            });
+
+
+
+            RemoveNotifications();
+        }
+
+        public override Task OnNavigatingFromAsync(NavigatingEventArgs args)
+        {
+            Aggregator.Unsubscribe(this);
+
+            var chat = _chat;
+            if (chat == null)
+            {
+                return Task.CompletedTask;
+            }
+
+#if !DEBUG
+            if (chat.Type is ChatTypeSecret)
+            {
+                ApplicationView.GetForCurrentView().IsScreenCaptureEnabled = true;
+            }
+#endif
+
+            ProtoService.Send(new CloseChat(chat.Id));
+
+            try
+            {
+                var field = ListField;
+                if (field == null)
+                {
+                    return Task.CompletedTask;
+                }
+
+                var panel = field.ItemsPanelRoot as ItemsStackPanel;
+                if (panel != null && panel.LastVisibleIndex >= 0 && panel.LastVisibleIndex < Items.Count - 1 && Items.Count > 0)
+                {
+                    _scrollingIndex[chat.Id] = Items[panel.LastVisibleIndex].Id;
+
+                    var container = field.ContainerFromIndex(panel.LastVisibleIndex) as ListViewItem;
+                    if (container != null)
+                    {
+                        var transform = container.TransformToVisual(field);
+                        var position = transform.TransformPoint(new Point());
+
+                        _scrollingPixel[chat.Id] = field.ActualHeight - (position.Y + container.ActualHeight);
+                    }
+                }
+                else
+                {
+                    _scrollingIndex.Remove(chat.Id);
+                    _scrollingPixel.Remove(chat.Id);
+                }
+            }
+            catch
+            {
+                _scrollingIndex.Remove(chat.Id);
+                _scrollingPixel.Remove(chat.Id);
+            }
+
+            if (Dispatcher != null)
+            {
+                Dispatcher.Dispatch(SaveDraft);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private async void ShowReplyMarkup(Chat chat)
+        {
+            if (chat.ReplyMarkupMessageId == 0)
+            {
+                Delegate?.UpdateChatReplyMarkup(chat, null);
+            }
+            else
+            {
+                var response = await ProtoService.SendAsync(new GetMessage(chat.Id, chat.ReplyMarkupMessageId));
+                if (response is Message message)
+                {
+                    Delegate?.UpdateChatReplyMarkup(chat, GetMessage(message));
+                }
+                else
+                {
+                    Delegate?.UpdateChatReplyMarkup(chat, null);
+                }
+            }
+        }
+
+        public async void ShowPinnedMessage(Chat chat, SupergroupFullInfo fullInfo)
+        {
+            if (fullInfo == null || fullInfo.PinnedMessageId == 0)
+            {
+                Delegate?.UpdatePinnedMessage(chat, null, false);
+            }
+            else
+            {
+                Delegate?.UpdatePinnedMessage(chat, null, true);
+
+                var response = await ProtoService.SendAsync(new GetMessage(chat.Id, fullInfo.PinnedMessageId));
+                if (response is Message message)
+                {
+                    Delegate?.UpdatePinnedMessage(chat, GetMessage(message), false);
+                }
+                else
+                {
+                    Delegate?.UpdatePinnedMessage(chat, null, false);
+                }
+            }
+        }
+
+        private async void ShowDraftMessage(Chat chat)
+        {
+            var draft = chat.DraftMessage;
+            if (draft == null)
+            {
+                SetText(null as string);
+            }
+            else
+            {
+                if (draft.InputMessageText is InputMessageText text)
+                {
+                    SetText(text.Text);
+                }
+
+                if (draft.ReplyToMessageId != 0)
+                {
+                    var response = await ProtoService.SendAsync(new GetMessage(chat.Id, draft.ReplyToMessageId));
+                    if (response is Message message)
+                    {
+                        EmbedData = new MessageEmbedData { ReplyToMessage = GetMessage(message) };
+                    }
+                }
+            }
+        }
+
+        private IList<Sticker> _stickerPack;
+        public IList<Sticker> StickerPack
         {
             get
             {
@@ -920,10 +1531,34 @@ namespace Unigram.ViewModels
             }
         }
 
-        public List<Tuple<TLUser, TLBotCommand>> UnfilteredBotCommands { get; private set; }
+        private ICollection _autocomplete;
+        public ICollection Autocomplete
+        {
+            get
+            {
+                return _autocomplete;
+            }
+            set
+            {
+                Set(ref _autocomplete, value);
+            }
+        }
 
-        private List<Tuple<TLUser, TLBotCommand>> _botCommands;
-        public List<Tuple<TLUser, TLBotCommand>> BotCommands
+        private bool _hasBotCommands;
+        public bool HasBotCommands
+        {
+            get
+            {
+                return _hasBotCommands;
+            }
+            set
+            {
+                Set(ref _hasBotCommands, value);
+            }
+        }
+
+        private List<UserCommand> _botCommands;
+        public List<UserCommand> BotCommands
         {
             get
             {
@@ -935,155 +1570,167 @@ namespace Unigram.ViewModels
             }
         }
 
-        public override Task OnNavigatedFromAsync(IDictionary<string, object> pageState, bool suspending)
+        private void RemoveNotifications()
         {
-            SaveDraft();
+            return;
 
-            //var file = await KnownFolders.SavedPictures.CreateFileAsync("TEST.TXT", CreationCollisionOption.GenerateUniqueName);
-            //await FileIO.WriteTextAsync(file, DateTime.Now.ToString());
-            Aggregator.Unsubscribe(this);
-            return Task.CompletedTask;
-        }
-
-        private ITLDialogWith GetParticipant(TLPeerBase peer)
-        {
-            if (peer is TLPeerUser user)
+            var chat = _chat;
+            if (chat == null)
             {
-                return CacheService.GetUser(user.UserId);
+                return;
             }
 
-            if (peer is TLPeerChat chat)
+            var group = string.Empty;
+            if (chat.Type is ChatTypePrivate privata)
             {
-                return CacheService.GetChat(chat.ChatId);
+                group = "u" + privata.UserId;
+            }
+            else if (chat.Type is ChatTypeSecret secret)
+            {
+                group = "s" + secret.SecretChatId;
+            }
+            else if (chat.Type is ChatTypeSupergroup supergroup)
+            {
+                group = "c" + supergroup.SupergroupId;
+            }
+            else if (chat.Type is ChatTypeBasicGroup basicGroup)
+            {
+                group = "c" + basicGroup.BasicGroupId;
             }
 
-            if (peer is TLPeerChannel channel)
+            Execute.BeginOnThreadPool(() =>
             {
-                return CacheService.GetChat(channel.ChannelId);
-            }
-
-            return null;
+                ToastNotificationManager.History.RemoveGroup(group, "App");
+            });
         }
 
         public void SaveDraft()
         {
-            var messageText = GetText().Replace("\r\n", "\n").Replace('\v', '\n').Replace('\r', '\n');
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-            var reply = new int?();
-
-            if (Reply is TLMessagesContainter container)
+            if (_currentInlineBot != null)
             {
-            }
-            else if (Reply != null)
-            {
-                reply = Reply.Id;
+                return;
             }
 
-            TLDraftMessageBase draft = null;
-            if (reply.HasValue || !string.IsNullOrWhiteSpace(messageText))
+            var embedded = _embedData;
+            if (embedded != null && embedded.EditingMessage != null)
             {
-                draft = new TLDraftMessage { Message = messageText, Date = date, ReplyToMsgId = reply };
-            }
-            else if (_currentDialog != null && _currentDialog.HasDraft && _currentDialog.Draft is TLDraftMessage)
-            {
-                draft = new TLDraftMessageEmpty();
+                return;
             }
 
-            if (draft != null)
+            var chat = Chat;
+            if (chat == null)
             {
-                ProtoService.SaveDraftAsync(Peer, draft, result =>
+                return;
+            }
+
+            if (chat.Type is ChatTypeSupergroup super && super.IsChannel)
+            {
+                var supergroup = ProtoService.GetSupergroup(super.SupergroupId);
+                if (supergroup != null && !supergroup.CanPostMessages())
                 {
-                    if (_currentDialog != null)
-                    {
-                        _currentDialog.Draft = draft;
-                        _currentDialog.HasDraft = draft != null;
-                    }
-
-                    Aggregator.Publish(new TLUpdateDraftMessage { Peer = Peer.ToPeer(), Draft = draft });
-                });
+                    return;
+                }
             }
+
+            var messageText = GetText().Format();
+            var reply = 0L;
+
+            if (embedded != null && embedded.ReplyToMessage != null)
+            {
+                reply = embedded.ReplyToMessage.Id;
+            }
+
+            DraftMessage draft = null;
+            if (!string.IsNullOrWhiteSpace(messageText))
+            {
+                draft = new DraftMessage(reply, new InputMessageText(GetFormattedText(messageText), false, false));
+            }
+
+            ProtoService.Send(new SetChatDraftMessage(_chat.Id, draft));
         }
 
-        public async void ProcessDraftReply(TLDraftMessage draft)
-        {
-            var shouldFetch = false;
+        //public async void ProcessDraftReply(TLDraftMessage draft)
+        //{
+        //    var shouldFetch = false;
 
-            var replyId = draft.ReplyToMsgId;
-            if (replyId != null && replyId.Value != 0)
-            {
-                var channelId = new int?();
-                //var channel = message.ToId as TLPeerChat;
-                //if (channel != null)
-                //{
-                //    channelId = channel.Id;
-                //}
-                // TODO: verify
-                if (Peer is TLInputPeerChannel)
-                {
-                    channelId = Peer.ToPeer().Id;
-                }
+        //    var replyId = draft.ReplyToMsgId;
+        //    if (replyId != null && replyId.Value != 0)
+        //    {
+        //        var channelId = new int?();
+        //        //var channel = message.ToId as TLPeerChat;
+        //        //if (channel != null)
+        //        //{
+        //        //    channelId = channel.Id;
+        //        //}
+        //        // TODO: verify
+        //        if (Peer is TLInputPeerChannel)
+        //        {
+        //            channelId = Peer.ToPeer().Id;
+        //        }
 
-                var reply = CacheService.GetMessage(replyId.Value, channelId);
-                if (reply != null)
-                {
-                    Reply = reply;
-                }
-                else
-                {
-                    shouldFetch = true;
-                }
-            }
+        //        var reply = CacheService.GetMessage(replyId.Value, channelId);
+        //        if (reply != null)
+        //        {
+        //            Reply = reply;
+        //        }
+        //        else
+        //        {
+        //            shouldFetch = true;
+        //        }
+        //    }
 
-            if (shouldFetch)
-            {
-                Task<MTProtoResponse<TLMessagesMessagesBase>> task = null;
+        //    if (shouldFetch)
+        //    {
+        //        Task<MTProtoResponse<TLMessagesMessagesBase>> task = null;
 
-                if (Peer is TLInputPeerChannel)
-                {
-                    // TODO: verify
-                    //var first = replyToMsgs.FirstOrDefault();
-                    //if (first.ToId is TLPeerChat)
-                    //{
-                    //    task = ProtoService.GetMessagesAsync(new TLVector<int> { draft.ReplyToMsgId.Value });
-                    //}
-                    //else
-                    {
-                        var peer = Peer as TLInputPeerChannel;
-                        task = ProtoService.GetMessagesAsync(new TLInputChannel { ChannelId = peer.ChannelId, AccessHash = peer.AccessHash }, new TLVector<int> { draft.ReplyToMsgId.Value });
-                    }
-                }
-                else
-                {
-                    task = ProtoService.GetMessagesAsync(new TLVector<int> { draft.ReplyToMsgId.Value });
-                }
+        //        if (Peer is TLInputPeerChannel)
+        //        {
+        //            // TODO: verify
+        //            //var first = replyToMsgs.FirstOrDefault();
+        //            //if (first.ToId is TLPeerChat)
+        //            //{
+        //            //    task = ProtoService.GetMessagesAsync(new TLVector<int> { draft.ReplyToMsgId.Value });
+        //            //}
+        //            //else
+        //            {
+        //                var peer = Peer as TLInputPeerChannel;
+        //                task = LegacyService.GetMessagesAsync(new TLInputChannel { ChannelId = peer.ChannelId, AccessHash = peer.AccessHash }, new TLVector<int> { draft.ReplyToMsgId.Value });
+        //            }
+        //        }
+        //        else
+        //        {
+        //            task = LegacyService.GetMessagesAsync(new TLVector<int> { draft.ReplyToMsgId.Value });
+        //        }
 
-                var result = await task;
-                if (result.IsSucceeded)
-                {
-                    CacheService.AddChats(result.Result.Chats, (results) => { });
-                    CacheService.AddUsers(result.Result.Users, (results) => { });
+        //        var response = await task;
+        //        if (response.IsSucceeded && response.Result is ITLMessages result)
+        //        {
+        //            //CacheService.AddChats(result.Result.Chats, (results) => { });
+        //            //CacheService.AddUsers(result.Result.Users, (results) => { });
+        //            CacheService.SyncUsersAndChats(result.Users, result.Chats, tuple => { });
 
-                    for (int j = 0; j < result.Result.Messages.Count; j++)
-                    {
-                        if (draft.ReplyToMsgId.Value == result.Result.Messages[j].Id)
-                        {
-                            Reply = result.Result.Messages[j];
-                        }
-                    }
-                }
-                else
-                {
-                    Execute.ShowDebugMessage("messages.getMessages error " + result.Error);
-                }
-            }
-        }
+        //            for (int j = 0; j < result.Messages.Count; j++)
+        //            {
+        //                if (draft.ReplyToMsgId.Value == result.Messages[j].Id)
+        //                {
+        //                    Reply = result.Messages[j];
+        //                }
+        //            }
+        //        }
+        //        else
+        //        {
+        //            Execute.ShowDebugMessage("messages.getMessages error " + response.Error);
+        //        }
+        //    }
+        //}
 
         private bool _isSilent;
         public bool IsSilent
         {
             get
             {
-                return _isSilent && With is TLChannel && ((TLChannel)With).IsBroadcast;
+                //return _isSilent && Chat != null && Chat.Type is ChatTypeSupergroup supergroup && supergroup.IsChannel;
+                return false;
             }
             set
             {
@@ -1095,67 +1742,61 @@ namespace Unigram.ViewModels
         {
             get
             {
-                return With is TLChannel && ((TLChannel)With).IsBroadcast;
+                //return Chat != null && Chat.Type is ChatTypeSupergroup supergroup && supergroup.IsChannel;
+                return false;
             }
         }
 
         #region Reply 
 
-        private TLMessageBase _reply;
-        public TLMessageBase Reply
+        private MessageEmbedData _embedData;
+        public MessageEmbedData EmbedData
         {
             get
             {
-                return _reply;
+                return _embedData;
             }
             set
             {
-                if (_reply != value)
+                if (_embedData != value)
                 {
-                    if (_reply is TLMessagesContainter container && container.FwdMessages != null && value == null)
-                    {
-                        App.InMemoryState.ForwardMessages = null;
-                    }
-
-                    _reply = value;
+                    _embedData = value;
                     RaisePropertyChanged();
-                    RaisePropertyChanged(() => ReplyInfo);
                 }
             }
         }
 
-        public ReplyInfo ReplyInfo
-        {
-            get
-            {
-                if (_reply != null)
-                {
-                    return new ReplyInfo
-                    {
-                        Reply = _reply,
-                        ReplyToMsgId = _reply.Id
-                    };
-                }
-
-                return null;
-            }
-        }
-
-        public RelayCommand ClearReplyCommand => new RelayCommand(ClearReplyExecute);
+        public RelayCommand ClearReplyCommand { get; }
         private void ClearReplyExecute()
         {
-            if (Reply is TLMessagesContainter container && container.EditMessage != null)
+            if (_embedData != null && _embedData.EditingMessage != null)
             {
-                SetText(null);
+                SetText(null, false);
                 //Aggregator.Publish(new EditMessageEventArgs(container.PreviousMessage, container.PreviousMessage.Message));
             }
 
-            Reply = null;
+            EmbedData = null;
+        }
+
+        private long GetReply(bool clean)
+        {
+            var embedded = _embedData;
+            if (embedded == null || embedded.ReplyToMessage == null)
+            {
+                return 0;
+            }
+
+            if (clean)
+            {
+                EmbedData = null;
+            }
+
+            return embedded.ReplyToMessage.Id;
         }
 
         #endregion
 
-        public RelayCommand PinnedCommand => new RelayCommand(PinnedExecute);
+        public RelayCommand PinnedCommand { get; }
         private async void PinnedExecute()
         {
             if (PinnedMessage != null)
@@ -1164,83 +1805,74 @@ namespace Unigram.ViewModels
             }
         }
 
-        public RelayCommand<string> SendCommand => new RelayCommand<string>(SendMessage);
+        public RelayCommand<string> SendCommand { get; }
         private async void SendMessage(string args)
         {
-            await SendMessageAsync(args, null, args != null);
+            await SendMessageAsync(args);
         }
 
-        public async Task SendMessageAsync(string text, List<TLMessageEntityBase> entities, bool useReplyMarkup = false)
+        public async Task SendMessageAsync(string text)
         {
-            if (Peer == null)
+            text = text.Format();
+
+            var embedded = EmbedData;
+            if (embedded != null && embedded.EditingMessage != null)
             {
-                await new MessageDialog("Something went wrong. Close the chat and open it again.").ShowQueuedAsync();
-                return;
-            }
+                var editing = embedded.EditingMessage;
 
-            var messageText = text.Replace("\r\n", "\n").Replace('\v', '\n').Replace('\r', '\n');
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-            var message = TLUtils.GetMessage(SettingsHelper.UserId, Peer.ToPeer(), TLMessageState.Sending, true, true, date, messageText, new TLMessageMediaEmpty(), TLLong.Random(), null);
-
-            message.Entities = entities != null ? new TLVector<TLMessageEntityBase>(entities) : null;
-            message.HasEntities = entities != null;
-
-            MessageHelper.PreprocessEntities(ref message);
-
-            var channel = With as TLChannel;
-            if (channel != null && channel.IsBroadcast)
-            {
-                message.IsSilent = IsSilent;
-            }
-
-            IEnumerable<TLMessage> forwardMessages = null;
-
-            if (Reply != null)
-            {
-                if (Reply is TLMessagesContainter container)
+                var chat = _chat;
+                if (chat == null)
                 {
-                    if (container.EditMessage != null)
-                    {
-                        var edit = await ProtoService.EditMessageAsync(Peer, container.EditMessage.Id, message.Message, message.Entities, null, false);
-                        if (edit.IsSucceeded)
-                        {
-                        }
-                        else
-                        {
-
-                        }
-
-                        Reply = null;
-                        return;
-                    }
-                    else if (container.FwdMessages != null)
-                    {
-                        forwardMessages = container.FwdMessages;
-                        Reply = null;
-                    }
+                    return;
                 }
-                else if (Reply != null)
-                {
-                    message.HasReplyToMsgId = true;
-                    message.ReplyToMsgId = Reply.Id;
-                    message.Reply = Reply;
-                    Reply = null;
-                }
-            }
 
-            if (string.IsNullOrWhiteSpace(messageText) == false)
-            {
-                var previousMessage = InsertSendingMessage(message, useReplyMarkup);
-                CacheService.SyncSendingMessage(message, previousMessage, async (m) =>
+                Function function;
+                if (editing.Content is MessageText)
                 {
-                    var response = await ProtoService.SendMessageAsync(message, () => { message.State = TLMessageState.Confirmed; });
-                    if (response.IsSucceeded)
+                    function = new EditMessageText(chat.Id, editing.Id, null, new InputMessageText(GetFormattedText(text), false, true));
+                }
+                else
+                {
+                    function = new EditMessageCaption(chat.Id, editing.Id, null, GetFormattedText(text));
+                }
+
+                var response = await ProtoService.SendAsync(function);
+                if (response is Message message)
+                {
+                    EmbedData = null;
+                    Aggregator.Publish(new UpdateMessageSendSucceeded(message, editing.Id));
+                }
+                else if (response is Error error)
+                {
+                    if (error.TypeEquals(ErrorType.MESSAGE_NOT_MODIFIED))
                     {
-                        message.RaisePropertyChanged(() => message.Media);
+                        EmbedData = null;
                     }
                     else
                     {
-                        if (response.Error.TypeEquals(TLErrorType.PEER_FLOOD))
+                        // TODO: ...
+                    }
+                }
+            }
+            else
+            {
+                var reply = GetReply(true);
+
+                if (text.Length > 0)
+                {
+                    int count = (int)Math.Ceiling(text.Length / 4096.0);
+                    for (int a = 0; a < count; a++)
+                    {
+                        var message = text.Substr(a * 4096, Math.Min((a + 1) * 4096, text.Length));
+                        var input = new InputMessageText(GetFormattedText(message), false, true);
+
+                        var boh = await SendMessageAsync(reply, input);
+                    }
+                }
+            }
+
+
+            /*                        if (response.Error.TypeEquals(TLErrorType.PEER_FLOOD))
                         {
                             var dialog = new TLMessageDialog();
                             dialog.Title = "Telegram";
@@ -1248,486 +1880,169 @@ namespace Unigram.ViewModels
                             dialog.PrimaryButtonText = "More info";
                             dialog.SecondaryButtonText = "OK";
 
-                            var confirm = await dialog.ShowAsync();
+                            var confirm = await dialog.ShowQueuedAsync();
                             if (confirm == ContentDialogResult.Primary)
                             {
                                 MessageHelper.HandleTelegramUrl("t.me/SpamBot");
                             }
                         }
-
-                        return;
-                    }
-
-                    if (forwardMessages != null)
-                    {
-                        App.InMemoryState.ForwardMessages = null;
-                        await ForwardMessagesAsync(forwardMessages);
-                    }
-                });
-            }
-            else
-            {
-                if (forwardMessages != null)
-                {
-                    App.InMemoryState.ForwardMessages = null;
-                    await ForwardMessagesAsync(forwardMessages);
-                }
-            }
-        }
-
-        public async Task ForwardMessagesAsync(IEnumerable<TLMessage> forwardMessages)
-        {
-            var date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, DateTime.Now);
-
-            TLInputPeerBase fromPeer = null;
-            var msgs = new TLVector<TLMessage>();
-            var msgIds = new TLVector<int>();
-
-            foreach (var fwdMessage in forwardMessages)
-            {
-                var clone = fwdMessage.Clone();
-                clone.Id = 0;
-                clone.HasReplyToMsgId = false;
-                clone.ReplyToMsgId = null;
-                clone.HasReplyMarkup = false;
-                clone.ReplyMarkup = null;
-                clone.Date = date;
-                clone.ToId = Peer.ToPeer();
-                clone.RandomId = TLLong.Random();
-                clone.IsOut = true;
-                clone.IsPost = false;
-                clone.FromId = SettingsHelper.UserId;
-                clone.IsMediaUnread = Peer is TLInputPeerChannel ? true : false;
-                clone.IsUnread = true;
-                clone.State = TLMessageState.Sending;
-
-                if (clone.Media == null)
-                {
-                    clone.HasMedia = true;
-                    clone.Media = new TLMessageMediaEmpty();
-                }
-
-                if (With is TLChannel channel)
-                {
-                    if (channel.IsBroadcast)
-                    {
-                        if (!channel.IsSignatures)
-                        {
-                            clone.HasFromId = false;
-                            clone.FromId = null;
-                        }
-
-                        if (IsSilent)
-                        {
-                            clone.IsSilent = true;
-                        }
-
-                        clone.HasViews = true;
-                        clone.Views = 1;
-                    }
-                }
-
-                if (clone.Media is TLMessageMediaGame gameMedia)
-                {
-                    clone.HasEntities = false;
-                    clone.Entities = null;
-                    clone.Message = null;
-                }
-
-                if (fromPeer == null)
-                {
-                    fromPeer = fwdMessage.Parent.ToInputPeer();
-                }
-
-                if (clone.FwdFrom == null && !clone.IsGame())
-                {
-                    if (fwdMessage.ToId is TLPeerChannel)
-                    {
-                        var fwdChannel = CacheService.GetChat(fwdMessage.ToId.Id) as TLChannel;
-                        if (fwdChannel != null && fwdChannel.IsMegaGroup)
-                        {
-                            clone.HasFwdFrom = true;
-                            clone.FwdFrom = new TLMessageFwdHeader
-                            {
-                                HasFromId = true,
-                                FromId = fwdMessage.FromId,
-                                Date = fwdMessage.Date
-                            };
-                        }
-                        else
-                        {
-                            clone.HasFwdFrom = true;
-                            clone.FwdFrom = new TLMessageFwdHeader
-                            {
-                                HasFromId = fwdMessage.HasFromId,
-                                FromId = fwdMessage.FromId,
-                                Date = fwdMessage.Date
-                            };
-
-                            if (fwdChannel.IsBroadcast)
-                            {
-                                clone.FwdFrom.HasChannelId = clone.FwdFrom.HasChannelPost = true;
-                                clone.FwdFrom.ChannelId = fwdChannel.Id;
-                                clone.FwdFrom.ChannelPost = fwdMessage.Id;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        clone.HasFwdFrom = true;
-                        clone.FwdFrom = new TLMessageFwdHeader
-                        {
-                            HasFromId = true,
-                            FromId = fwdMessage.FromId,
-                            Date = fwdMessage.Date
-                        };
-                    }
-                }
-
-                msgs.Add(clone);
-                msgIds.Add(fwdMessage.Id);
-
-                Messages.Add(clone);
-            }
-
-            CacheService.SyncSendingMessages(msgs, null, async (_) =>
-            {
-                await ProtoService.ForwardMessagesAsync(Peer, fromPeer, msgIds, msgs, false);
-            });
-        }
-
-        private TLMessageBase InsertSendingMessage(TLMessage message, bool useReplyMarkup = false)
-        {
-            TLMessageBase result;
-            if (Messages.Count > 0)
-            {
-                if (useReplyMarkup && _replyMarkupMessage != null)
-                {
-                    var chat = With as TLChatBase;
-                    if (chat != null)
-                    {
-                        message.ReplyToMsgId = _replyMarkupMessage.Id;
-                        message.Reply = _replyMarkupMessage;
-                    }
-
-                    Execute.BeginOnUIThread(() =>
-                    {
-                        if (Reply != null)
-                        {
-                            Reply = null;
-                            SetReplyMarkup(null);
-                        }
-                    });
-                }
-
-                var messagesContainer = Reply as TLMessagesContainter;
-                if (Reply != null)
-                {
-                    if (Reply.Id != 0)
-                    {
-                        message.ReplyToMsgId = Reply.Id;
-                        message.Reply = Reply;
-                    }
-                    else if (messagesContainer != null && !string.IsNullOrEmpty(message.Message.ToString()))
-                    {
-                        message.Reply = Reply;
-                    }
-
-                    var replyMessage = Reply as TLMessage;
-                    if (replyMessage != null)
-                    {
-                        //var replyMarkup = replyMessage.ReplyMarkup;
-                        //if (replyMarkup != null)
-                        //{
-                        //    replyMarkup.HasResponse = true;
-                        //}
-                    }
-
-                    Execute.BeginOnUIThread(delegate
-                    {
-                        Reply = null;
-                    });
-                }
-
-                result = Messages.LastOrDefault();
-                Messages.Add(message);
-
-                if (messagesContainer != null && !string.IsNullOrEmpty(message.Message.ToString()))
-                {
-                    foreach (var fwdMessage in messagesContainer.FwdMessages)
-                    {
-                        Messages.Insert(0, fwdMessage);
-                    }
-                }
-
-                //for (int i = 1; i < Messages.Count; i++)
-                //{
-                //    var serviceMessage = Messages[i] as TLMessageService;
-                //    if (serviceMessage != null)
-                //    {
-                //        var unreadAction = serviceMessage.Action as TLMessageActionUnreadMessages;
-                //        if (unreadAction != null)
-                //        {
-                //            Messages.RemoveAt(i);
-                //            break;
-                //        }
-                //    }
-                //}
-            }
-            else
-            {
-                var messagesContainer = Reply as TLMessagesContainter;
-                if (Reply != null)
-                {
-                    if (Reply.Id != 0)
-                    {
-                        message.HasReplyToMsgId = true;
-                        message.ReplyToMsgId = Reply.Id;
-                        message.Reply = Reply;
-                    }
-                    else if (messagesContainer != null && !string.IsNullOrEmpty(message.Message.ToString()))
-                    {
-                        message.Reply = Reply;
-                    }
-                    Reply = null;
-                }
-
-                Messages.Clear();
-                Messages.Add(message);
-
-                var history = CacheService.GetHistory(Peer.ToPeer(), 15);
-                result = history.FirstOrDefault();
-
-                for (int j = 0; j < history.Count; j++)
-                {
-                    Messages.Add(history[j]);
-                }
-
-                //if (messagesContainer != null && !string.IsNullOrEmpty(message.Message.ToString()))
-                //{
-                //    foreach (var fwdMessage in messagesContainer.FwdMessages)
-                //    {
-                //        Messages.Insert(0, fwdMessage);
-                //    }
-                //}
-
-                //for (int k = 1; k < Messages.Count; k++)
-                //{
-                //    var serviceMessage = Messages[k] as TLMessageService;
-                //    if (serviceMessage != null)
-                //    {
-                //        var unreadAction = serviceMessage.Action as TLMessageActionUnreadMessages;
-                //        if (unreadAction != null)
-                //        {
-                //            Messages.RemoveAt(k);
-                //            break;
-                //        }
-                //    }
-                //}
-            }
-            return result;
+*/
+            //ProtoService.Send(new SendMessage())
         }
 
         #region Join channel
 
-        public RelayCommand JoinChannelCommand => new RelayCommand(JoinChannelExecute);
-        private async void JoinChannelExecute()
+        public RelayCommand JoinChannelCommand { get; }
+        private void JoinChannelExecute()
         {
-            var channel = With as TLChannel;
-            if (channel == null)
+            var chat = _chat;
+            if (chat == null)
             {
                 return;
             }
 
-            var response = await ProtoService.JoinChannelAsync(channel);
-            if (response.IsSucceeded)
-            {
-                RaisePropertyChanged(() => With);
-
-                if (channel.IsMegaGroup)
-                {
-                    if (response.Result is TLUpdates update)
-                    {
-                        var newChannelMessage = update.Updates.FirstOrDefault(x => x is TLUpdateNewChannelMessage) as TLUpdateNewChannelMessage;
-                        if (newChannelMessage != null)
-                        {
-                            Messages.Add(newChannelMessage.Message);
-
-                            if (_currentDialog == null)
-                            {
-                                _currentDialog = CacheService.GetDialog(channel.ToPeer());
-                            }
-
-                            Aggregator.Publish(new TopMessageUpdatedEventArgs(this._currentDialog, newChannelMessage.Message));
-                        }
-                        else
-                        {
-                            var message = new TLMessageService
-                            {
-                                RandomId = TLLong.Random(),
-                                FromId = SettingsHelper.UserId,
-                                ToId = new TLPeerChannel
-                                {
-                                    Id = channel.Id
-                                },
-                                State = TLMessageState.Confirmed,
-                                IsOut = true,
-                                IsUnread = false,
-                                Date = TLUtils.DateToUniversalTimeTLInt(ProtoService.ClientTicksDelta, System.DateTime.Now),
-                                Action = new TLMessageActionChatAddUser
-                                {
-                                    Users = new TLVector<int> { SettingsHelper.UserId }
-                                }
-                            };
-
-                            CacheService.SyncMessage(message, true, true, cachedMessage =>
-                            {
-                                Messages.Add(cachedMessage);
-                            });
-                        }
-                    }
-                }
-            }
+            var myid = ProtoService.GetOption<OptionValueInteger>("my_id");
+            ProtoService.Send(new AddChatMember(chat.Id, myid.Value, 0));
         }
 
         #endregion
 
         #region Toggle mute
 
-        public RelayCommand ToggleMuteCommand => new RelayCommand(ToggleMuteExecute);
-        private async void ToggleMuteExecute()
+        public RelayCommand MuteCommand { get; }
+        public RelayCommand UnmuteCommand { get; }
+
+        public RelayCommand<bool> ToggleMuteCommand { get; }
+        private void ToggleMuteExecute(bool unmute)
         {
-            var channel = With as TLChannel;
-            if (channel != null && _currentDialog != null)
+            var chat = _chat;
+            if (chat == null)
             {
-                var notifySettings = _currentDialog.NotifySettings as TLPeerNotifySettings;
-                if (notifySettings != null)
-                {
-                    var muteUntil = notifySettings.MuteUntil == int.MaxValue ? 0 : int.MaxValue;
-                    var settings = new TLInputPeerNotifySettings
-                    {
-                        MuteUntil = muteUntil,
-                        IsShowPreviews = notifySettings.IsShowPreviews,
-                        IsSilent = notifySettings.IsSilent,
-                        Sound = notifySettings.Sound
-                    };
-
-                    var response = await ProtoService.UpdateNotifySettingsAsync(new TLInputNotifyPeer { Peer = Peer }, settings);
-                    if (response.IsSucceeded)
-                    {
-                        notifySettings.MuteUntil = muteUntil;
-                        channel.RaisePropertyChanged(() => _currentDialog.NotifySettings);
-
-                        var dialog = CacheService.GetDialog(Peer.ToPeer());
-                        if (dialog != null)
-                        {
-                            dialog.NotifySettings = _currentDialog.NotifySettings;
-                            dialog.RaisePropertyChanged(() => dialog.NotifySettings);
-                            dialog.RaisePropertyChanged(() => dialog.Self);
-
-                            var chatFull = CacheService.GetFullChat(channel.Id);
-                            if (chatFull != null)
-                            {
-                                chatFull.NotifySettings = _currentDialog.NotifySettings;
-                                chatFull.RaisePropertyChanged(() => chatFull.NotifySettings);
-                            }
-
-                            // TODO: 06/05/2017
-                            //var dialogChannel = dialog.With as TLChannel;
-                            //if (dialogChannel != null)
-                            //{
-                            //    dialogChannel.NotifySettings = channel.NotifySettings;
-                            //}
-                        }
-
-                        CacheService.Commit();
-                        RaisePropertyChanged(() => With);
-                    }
-                }
+                return;
             }
+
+            ProtoService.Send(new SetChatNotificationSettings(chat.Id, new ChatNotificationSettings(false, unmute ? 0 : 632053052, false, chat.NotificationSettings.Sound, false, chat.NotificationSettings.ShowPreview)));
         }
 
         #endregion
 
         #region Toggle silent
 
-        public RelayCommand ToggleSilentCommand => new RelayCommand(ToggleSilentExecute);
+        public RelayCommand ToggleSilentCommand { get; }
         private async void ToggleSilentExecute()
         {
-            var channel = With as TLChannel;
-            if (channel != null && _currentDialog != null)
-            {
-                var notifySettings = _currentDialog.NotifySettings as TLPeerNotifySettings;
-                if (notifySettings != null)
-                {
-                    var silent = !notifySettings.IsSilent;
-                    var settings = new TLInputPeerNotifySettings
-                    {
-                        MuteUntil = notifySettings.MuteUntil,
-                        IsShowPreviews = notifySettings.IsShowPreviews,
-                        IsSilent = silent,
-                        Sound = notifySettings.Sound
-                    };
+            //var channel = With as TLChannel;
+            //if (channel != null && _dialog != null)
+            //{
+            //    var notifySettings = _dialog.NotifySettings as TLPeerNotifySettings;
+            //    if (notifySettings != null)
+            //    {
+            //        var silent = !notifySettings.IsSilent;
+            //        var settings = new TLInputPeerNotifySettings
+            //        {
+            //            MuteUntil = notifySettings.MuteUntil,
+            //            IsShowPreviews = notifySettings.IsShowPreviews,
+            //            IsSilent = silent,
+            //            Sound = notifySettings.Sound
+            //        };
 
-                    var response = await ProtoService.UpdateNotifySettingsAsync(new TLInputNotifyPeer { Peer = Peer }, settings);
-                    if (response.IsSucceeded)
-                    {
-                        notifySettings.IsSilent = silent;
-                        channel.RaisePropertyChanged(() => _currentDialog.NotifySettings);
+            //        var response = await LegacyService.UpdateNotifySettingsAsync(new TLInputNotifyPeer { Peer = Peer }, settings);
+            //        if (response.IsSucceeded)
+            //        {
+            //            notifySettings.IsSilent = silent;
+            //            channel.RaisePropertyChanged(() => _dialog.NotifySettings);
 
-                        var dialog = CacheService.GetDialog(Peer.ToPeer());
-                        if (dialog != null)
-                        {
-                            dialog.NotifySettings = _currentDialog.NotifySettings;
-                            dialog.RaisePropertyChanged(() => dialog.NotifySettings);
-                            dialog.RaisePropertyChanged(() => dialog.Self);
+            //            var dialog = CacheService.GetDialog(Peer.ToPeer());
+            //            if (dialog != null)
+            //            {
+            //                dialog.NotifySettings = _dialog.NotifySettings;
+            //                dialog.RaisePropertyChanged(() => dialog.NotifySettings);
+            //                dialog.RaisePropertyChanged(() => dialog.IsMuted);
+            //                dialog.RaisePropertyChanged(() => dialog.Self);
 
-                            var chatFull = CacheService.GetFullChat(channel.Id);
-                            if (chatFull != null)
-                            {
-                                chatFull.NotifySettings = _currentDialog.NotifySettings;
-                                chatFull.RaisePropertyChanged(() => chatFull.NotifySettings);
-                            }
+            //                var chatFull = CacheService.GetFullChat(channel.Id);
+            //                if (chatFull != null)
+            //                {
+            //                    chatFull.NotifySettings = _dialog.NotifySettings;
+            //                    chatFull.RaisePropertyChanged(() => chatFull.NotifySettings);
+            //                }
 
-                            // TODO: 06/05/2017
-                            //var dialogChannel = dialog.With as TLChannel;
-                            //if (dialogChannel != null)
-                            //{
-                            //    dialogChannel.NotifySettings = channel.NotifySettings;
-                            //}
-                        }
+            //                // TODO: 06/05/2017
+            //                //var dialogChannel = dialog.With as TLChannel;
+            //                //if (dialogChannel != null)
+            //                //{
+            //                //    dialogChannel.NotifySettings = channel.NotifySettings;
+            //                //}
+            //            }
 
-                        CacheService.Commit();
-                        RaisePropertyChanged(() => With);
-                    }
-                }
-            }
+            //            CacheService.Commit();
+            //            RaisePropertyChanged(() => With);
+            //        }
+            //    }
+            //}
         }
 
         #endregion
 
         #region Report Spam
 
-        public RelayCommand HideReportSpamCommand => new RelayCommand(HideReportSpamExecute);
-        private async void HideReportSpamExecute()
+        public RelayCommand HideReportSpamCommand { get; }
+        private void HideReportSpamExecute()
         {
-            var response = await ProtoService.HideReportSpamAsync(Peer);
-            if (response.IsSucceeded)
+            var chat = _chat;
+            if (chat == null)
             {
-                IsReportSpam = false;
+                return;
             }
+
+            IsReportSpam = false;
+            ProtoService.Send(new ChangeChatReportSpamState(chat.Id, false));
         }
 
-        public RelayCommand ReportSpamCommand => new RelayCommand(ReportSpamExecute);
+        public RelayCommand ReportSpamCommand { get; }
         private async void ReportSpamExecute()
         {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
             if (IsReportSpam)
             {
-                var response = await ProtoService.ReportSpamAsync(Peer);
-                if (response.IsSucceeded)
+                var message = Strings.Resources.ReportSpamAlert;
+                if (chat.Type is ChatTypeSupergroup supergroup)
                 {
-
+                    message = supergroup.IsChannel ? Strings.Resources.ReportSpamAlertChannel : Strings.Resources.ReportSpamAlertGroup;
                 }
+                else if (chat.Type is ChatTypeBasicGroup)
+                {
+                    message = Strings.Resources.ReportSpamAlertGroup;
+                }
+
+                var confirm = await TLMessageDialog.ShowAsync(message, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
+                if (confirm != ContentDialogResult.Primary)
+                {
+                    return;
+                }
+
+                IsReportSpam = false;
+                ProtoService.Send(new ChangeChatReportSpamState(chat.Id, true));
+
+                if (chat.Type is ChatTypeBasicGroup || chat.Type is ChatTypeSupergroup)
+                {
+                    ProtoService.Send(new SetChatMemberStatus(chat.Id, ProtoService.GetMyId(), new ChatMemberStatusLeft()));
+                }
+                else if (chat.Type is ChatTypePrivate || chat.Type is ChatTypeSecret)
+                {
+                    var user = ProtoService.GetUser(chat);
+                    if (user != null)
+                    {
+                        ProtoService.Send(new BlockUser(user.Id));
+                    }
+                }
+
+                ProtoService.Send(new DeleteChatHistory(chat.Id, true));
             }
         }
 
@@ -1735,7 +2050,7 @@ namespace Unigram.ViewModels
 
         #region Stickers
 
-        public RelayCommand OpenStickersCommand => new RelayCommand(OpenStickersExecute);
+        public RelayCommand OpenStickersCommand { get; }
         private void OpenStickersExecute()
         {
             _stickers.SyncStickers();
@@ -1746,12 +2061,58 @@ namespace Unigram.ViewModels
 
         #region Delete and Exit
 
-        public RelayCommand DialogDeleteCommand => new RelayCommand(DialogDeleteExecute);
-        private void DialogDeleteExecute()
+        public RelayCommand DialogDeleteCommand { get; }
+        private async void DialogDeleteExecute()
         {
-            if (_currentDialog != null)
+            var chat = _chat;
+            if (chat == null)
             {
-                UnigramContainer.Current.ResolveType<MainViewModel>().Dialogs.DialogDeleteCommand.Execute(_currentDialog);
+                return;
+            }
+
+            var message = Strings.Resources.AreYouSureDeleteAndExit;
+            if (chat.Type is ChatTypePrivate || chat.Type is ChatTypeSecret)
+            {
+                message = Strings.Resources.AreYouSureDeleteThisChat;
+            }
+            else if (chat.Type is ChatTypeSupergroup super)
+            {
+                message = super.IsChannel ? Strings.Resources.ChannelLeaveAlert : Strings.Resources.MegaLeaveAlert;
+            }
+
+            var confirm = await TLMessageDialog.ShowAsync(message, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
+            if (confirm == ContentDialogResult.Primary)
+            {
+                if (chat.Type is ChatTypeSecret secret)
+                {
+                    await ProtoService.SendAsync(new CloseSecretChat(secret.SecretChatId));
+                }
+                else if (chat.Type is ChatTypeBasicGroup || chat.Type is ChatTypeSupergroup)
+                {
+                    await ProtoService.SendAsync(new SetChatMemberStatus(chat.Id, ProtoService.GetMyId(), new ChatMemberStatusLeft()));
+                }
+
+                ProtoService.Send(new DeleteChatHistory(chat.Id, true));
+            }
+        }
+
+        #endregion
+
+        #region Clear history
+
+        public RelayCommand DialogClearCommand { get; }
+        private async void DialogClearExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var confirm = await TLMessageDialog.ShowAsync(Strings.Resources.AreYouSureClearHistory, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
+            if (confirm == ContentDialogResult.Primary)
+            {
+                ProtoService.Send(new DeleteChatHistory(chat.Id, false));
             }
         }
 
@@ -1759,70 +2120,70 @@ namespace Unigram.ViewModels
 
         #region Call
 
-        public RelayCommand CallCommand => new RelayCommand(CallExecute);
+        public RelayCommand CallCommand { get; }
         private async void CallExecute()
         {
-            var user = With as TLUser;
-            if (user == null)
-            {
-                return;
-            }
+            //var user = With as TLUser;
+            //if (user == null)
+            //{
+            //    return;
+            //}
 
-            try
-            {
-                var coordinator = VoipCallCoordinator.GetDefault();
-                var result = await coordinator.ReserveCallResourcesAsync("Unigram.Tasks.VoIPCallTask");
-                if (result == VoipPhoneCallResourceReservationStatus.Success)
-                {
-                    await VoIPConnection.Current.SendRequestAsync("voip.startCall", user);
-                }
-            }
-            catch
-            {
-                await TLMessageDialog.ShowAsync("Something went wrong. Please, try to close and relaunch the app.", "Unigram", "OK");
-            }
+            //try
+            //{
+            //    var coordinator = VoipCallCoordinator.GetDefault();
+            //    var result = await coordinator.ReserveCallResourcesAsync("Unigram.Tasks.VoIPCallTask");
+            //    if (result == VoipPhoneCallResourceReservationStatus.Success)
+            //    {
+            //        await VoIPConnection.Current.SendRequestAsync("voip.startCall", user);
+            //    }
+            //}
+            //catch
+            //{
+            //    await TLMessageDialog.ShowAsync("Something went wrong. Please, try to close and relaunch the app.", "Unigram", "OK");
+            //}
         }
 
         #endregion
 
         #region Unpin message
 
-        public RelayCommand UnpinMessageCommand => new RelayCommand(UnpinMessageExecute);
+        public RelayCommand UnpinMessageCommand { get; }
         private async void UnpinMessageExecute()
         {
-            if (_pinnedMessage == null)
+            var chat = _chat;
+            if (chat == null)
             {
                 return;
             }
 
-            var channel = With as TLChannel;
-            if (channel == null)
+            var supergroupType = chat.Type as ChatTypeSupergroup;
+            if (supergroupType == null)
             {
                 return;
             }
 
-            if (channel.IsCreator || channel.IsEditor || channel.IsModerator)
+            var supergroup = ProtoService.GetSupergroup(supergroupType.SupergroupId);
+            if (supergroup == null)
             {
-                var confirm = await TLMessageDialog.ShowAsync("Would you like to unpin this message?", "Unigram", "Yes", "No");
+                return;
+            }
+
+            if (supergroup.Status is ChatMemberStatusCreator || (supergroup.Status is ChatMemberStatusAdministrator administrator && administrator.CanPinMessages))
+            {
+                var confirm = await TLMessageDialog.ShowAsync(Strings.Resources.UnpinMessageAlert, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
                 if (confirm == ContentDialogResult.Primary)
                 {
-                    var response = await ProtoService.UpdatePinnedMessageAsync(false, channel.ToInputChannel(), 0);
-                    if (response.IsSucceeded)
-                    {
-                        PinnedMessage = null;
-                    }
-                    else
-                    {
-                        // TODO
-                    }
+                    PinnedMessage = null;
+                    ProtoService.Send(new UnpinSupergroupMessage(supergroup.Id));
                 }
             }
             else
             {
-                var appData = ApplicationData.Current.LocalSettings.CreateContainer("Channels", ApplicationDataCreateDisposition.Always);
-                appData.Values["Pinned" + channel.Id] = _pinnedMessage.Id;
+                Delegate?.UpdatePinnedMessage(chat, null, false);
 
-                PinnedMessage = null;
+                //var appData = ApplicationData.Current.LocalSettings.CreateContainer("Channels", ApplicationDataCreateDisposition.Always);
+                //appData.Values["Pinned" + supergroup.Id] = _pinnedMessage.Id;
             }
         }
 
@@ -1830,72 +2191,551 @@ namespace Unigram.ViewModels
 
         #region Unblock
 
-        public RelayCommand UnblockCommand => new RelayCommand(UnblockExecute);
+        public RelayCommand UnblockCommand { get; }
         private async void UnblockExecute()
         {
-            var user = _with as TLUser;
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var privata = chat.Type as ChatTypePrivate;
+            if (privata == null)
+            {
+                return;
+            }
+
+            var confirm = await TLMessageDialog.ShowAsync(Strings.Resources.AreYouSureUnblockContact, Strings.Resources.AppName, Strings.Resources.OK, Strings.Resources.Cancel);
+            if (confirm != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            ProtoService.Send(new UnblockUser(privata.UserId));
+        }
+
+        #endregion
+
+        #region Switch
+
+        public RelayCommand<string> SwitchCommand { get; }
+        private void SwitchExecute(string start)
+        {
+            if (_currentInlineBot == null)
+            {
+                return;
+            }
+            else
+            {
+
+            }
+
+            // TODO: edit to send it automatically
+            //NavigationService.NavigateToDialog(_currentInlineBot, accessToken: switchPM.StartParam);
+        }
+
+        #endregion
+
+        #region Share my contact
+
+        public RelayCommand ShareContactCommand { get; }
+        private async void ShareContactExecute()
+        {
+            var response = await ProtoService.SendAsync(new GetMe());
+            if (response is User user)
+            {
+                await SendContactAsync(new Contact(user.PhoneNumber, user.FirstName, user.LanguageCode, user.Id));
+            }
+        }
+
+        #endregion
+
+        #region Add contact
+
+        public RelayCommand AddContactCommand { get; }
+        private async void AddContactExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var user = ProtoService.GetUser(chat);
             if (user == null)
             {
                 return;
             }
 
-            var result = await ProtoService.UnblockAsync(user.ToInputUser());
-            if (result.IsSucceeded)
+            var dialog = new EditUserNameView(user.FirstName, user.LastName);
+
+            var confirm = await dialog.ShowQueuedAsync();
+            if (confirm == ContentDialogResult.Primary)
             {
-                if (Full is TLUserFull full)
-                {
-                    full.IsBlocked = false;
-                }
-
-                RaisePropertyChanged(() => With);
-                RaisePropertyChanged(() => Full);
-
-                CacheService.Commit();
-                Aggregator.Publish(new TLUpdateUserBlocked { UserId = user.Id, Blocked = false });
+                ProtoService.Send(new ImportContacts(new[] { new Contact(user.PhoneNumber, dialog.FirstName, dialog.LastName, user.Id) }));
             }
         }
 
         #endregion
+
+        #region Pin chat
+
+        public RelayCommand PinChatCommand { get; }
+        private async void PinChatExecute()
+        {
+            //var group = _pushService.GetGroup(this.With);
+            //if (string.IsNullOrWhiteSpace(group))
+            //{
+            //    return;
+            //}
+
+            //var displayName = _pushService.GetTitle(this.With);
+            //var arguments = _pushService.GetLaunch(this.With);
+            //var picture = _pushService.GetPicture(this.With, group);
+
+            //var secondaryTile = new SecondaryTile(group, displayName, arguments, new Uri(picture), TileSize.Default);
+            //secondaryTile.VisualElements.Wide310x150Logo = new Uri(picture);
+            //secondaryTile.VisualElements.Square310x310Logo = new Uri(picture);
+
+            //var tileCreated = await secondaryTile.RequestCreateAsync();
+            //if (tileCreated)
+            //{
+            //    UpdatePinChatCommands();
+            //    ResetTile();
+            //}
+        }
+
+        private void ResetTile()
+        {
+            //var group = _pushService.GetGroup(this.With);
+            //if (string.IsNullOrWhiteSpace(group))
+            //{
+            //    return;
+            //}
+
+            //var displayName = _pushService.GetTitle(this.With);
+            //var picture = _pushService.GetPicture(this.With, group);
+
+            //var existsSecondaryTile = SecondaryTile.Exists(group);
+            //if (existsSecondaryTile)
+            //{
+            //    NotificationTask.ResetSecondaryTile(displayName, picture, group);
+            //}
+        }
+
+        private bool CanExecutePinChatCommand()
+        {
+            //var group = _pushService.GetGroup(this.With);
+            //if (string.IsNullOrWhiteSpace(group))
+            //{
+            //    return false;
+            //}
+
+            //return !SecondaryTile.Exists(group);
+
+            return false;
+        }
+
+        private void UpdatePinChatCommands()
+        {
+            CanPinChat = CanExecutePinChatCommand();
+            CanUnpinChat = !CanPinChat;
+        }
+
+        #endregion
+
+        #region Unpin chat
+
+        public RelayCommand UnpinChatCommand { get; }
+        private async void UnpinChatExecute()
+        {
+            //var group = _pushService.GetGroup(this.With);
+            //if (string.IsNullOrWhiteSpace(group))
+            //{
+            //    return;
+            //}
+
+            //var secondaryTile = new SecondaryTile(group);
+            //if (secondaryTile == null)
+            //{
+            //    return;
+            //}
+
+            //var tileDeleted = await secondaryTile.RequestDeleteAsync();
+            //if (tileDeleted)
+            //{
+            //    UpdatePinChatCommands();
+            //}
+        }
+
+        private bool CanUnpinChatExecute()
+        {
+            //var group = _pushService.GetGroup(this.With);
+            //if (string.IsNullOrWhiteSpace(group))
+            //{
+            //    return false;
+            //}
+
+            //return SecondaryTile.Exists(group);
+            return false;
+        }
+
+        #endregion
+
+        #region Start
+
+        public RelayCommand StartCommand { get; }
+        private async void StartExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var bot = GetStartingBot();
+            var command = chat.Type is ChatTypePrivate ? "/start" : "/start@" + bot.Username;
+
+            if (bot == null)
+            {
+                return;
+            }
+
+            if (_accessToken == null)
+            {
+                await SendMessageAsync(command);
+            }
+            else
+            {
+                ProtoService.Send(new SendBotStartMessage(bot.Id, chat.Id, _accessToken));
+            }
+        }
+
+        private User GetStartingBot()
+        {
+            //var user = _with as TLUser;
+            //if (user != null && user.IsBot)
+            //{
+            //    return user;
+            //}
+
+            //var chat = _with as TLChatBase;
+            //if (chat != null)
+            //{
+            //    // TODO
+            //    //return this._bot;
+            //}
+
+            return null;
+        }
+
+        #endregion
+
+        #region Search
+
+        public RelayCommand SearchCommand { get; }
+        private void SearchExecute()
+        {
+            Search = new DialogSearchViewModel(ProtoService, CacheService, Settings, Aggregator, this);
+        }
+
+        #endregion
+
+        #region Jump to date
+
+        public RelayCommand JumpDateCommand { get; }
+        private async void JumpDateExecute()
+        {
+            var dialog = new Controls.Views.CalendarView();
+            dialog.MaxDate = DateTimeOffset.Now.Date;
+            //dialog.SelectedDates.Add(BindConvert.Current.DateTime(message.Date));
+
+            var confirm = await dialog.ShowQueuedAsync();
+            if (confirm == ContentDialogResult.Primary && dialog.SelectedDates.Count > 0)
+            {
+                var first = dialog.SelectedDates.FirstOrDefault();
+                var offset = first.Date.ToTimestamp();
+                await LoadDateSliceAsync(offset);
+            }
+        }
+
+        #endregion
+
+        #region Group stickers
+
+        public RelayCommand GroupStickersCommand { get; }
+        private void GroupStickersExecute()
+        {
+            //var channel = With as TLChannel;
+            //if (channel == null)
+            //{
+            //    return;
+            //}
+
+            //var channelFull = Full as TLChannelFull;
+            //if (channelFull == null)
+            //{
+            //    return;
+            //}
+
+            //if ((channel.IsCreator || (channel.HasAdminRights && channel.AdminRights.IsChangeInfo)) && channelFull.IsCanSetStickers)
+            //{
+            //    NavigationService.Navigate(typeof(SupergroupEditStickerSetPage), channel.ToPeer());
+            //}
+            //else
+            //{
+            //    Stickers.HideGroup(channelFull);
+            //}
+        }
+
+        #endregion
+
+        #region Read mentions
+
+        public RelayCommand ReadMentionsCommand { get; }
+        private async void ReadMentionsExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            ProtoService.Send(new ReadAllChatMentions(chat.Id));
+        }
+
+        #endregion
+
+        #region Report Chat
+
+        public RelayCommand ReportCommand { get; }
+        private async void ReportExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var opt1 = new RadioButton { Content = Strings.Resources.ReportChatSpam, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var opt2 = new RadioButton { Content = Strings.Resources.ReportChatViolence, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var opt3 = new RadioButton { Content = Strings.Resources.ReportChatPornography, HorizontalAlignment = HorizontalAlignment.Stretch };
+            var opt4 = new RadioButton { Content = Strings.Resources.ReportChatOther, HorizontalAlignment = HorizontalAlignment.Stretch, IsChecked = true };
+            var stack = new StackPanel();
+            stack.Children.Add(opt1);
+            stack.Children.Add(opt2);
+            stack.Children.Add(opt3);
+            stack.Children.Add(opt4);
+            stack.Margin = new Thickness(12, 16, 12, 0);
+
+            var dialog = new ContentDialog { Style = BootStrapper.Current.Resources["ModernContentDialogStyle"] as Style };
+            dialog.Content = stack;
+            dialog.Title = Strings.Resources.ReportChat;
+            dialog.IsPrimaryButtonEnabled = true;
+            dialog.IsSecondaryButtonEnabled = true;
+            dialog.PrimaryButtonText = Strings.Resources.OK;
+            dialog.SecondaryButtonText = Strings.Resources.Cancel;
+
+            var confirm = await dialog.ShowQueuedAsync();
+            if (confirm != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var reason = opt1.IsChecked == true
+                ? new ChatReportReasonSpam()
+                : (opt2.IsChecked == true
+                    ? new ChatReportReasonViolence()
+                    : (opt3.IsChecked == true
+                        ? new ChatReportReasonPornography()
+                        : (ChatReportReason)new ChatReportReasonCustom()));
+
+            if (reason is ChatReportReasonCustom other)
+            {
+                var input = new InputDialog();
+                input.Title = Strings.Resources.ReportChat;
+                input.PlaceholderText = Strings.Resources.ReportChatDescription;
+                input.IsPrimaryButtonEnabled = true;
+                input.IsSecondaryButtonEnabled = true;
+                input.PrimaryButtonText = Strings.Resources.OK;
+                input.SecondaryButtonText = Strings.Resources.Cancel;
+
+                var inputResult = await input.ShowQueuedAsync();
+                if (inputResult == ContentDialogResult.Primary)
+                {
+                    other.Text = input.Text;
+                }
+                else
+                {
+                    return;
+                }
+            }
+
+            var response = await ProtoService.SendAsync(new ReportChat(chat.Id, reason, new long[0]));
+        }
+
+        #endregion
+
+        #region Set timer
+
+        public RelayCommand SetTimerCommand { get; }
+        private async void SetTimerExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var dialog = new SelectTTLSecondsView(false);
+
+            var confirm = await dialog.ShowQueuedAsync();
+            if (confirm != ContentDialogResult.Primary)
+            {
+                return;
+            }
+
+            var response = await ProtoService.SendAsync(new SendChatSetTtlMessage(chat.Id, dialog.TTLSeconds ?? 0));
+            if (response is Message message)
+            {
+                //Items.Add(GetMessage(message));
+            }
+        }
+
+        #endregion
+
+        #region Action
+
+        public RelayCommand ActionCommand { get; }
+        private void ActionExecute()
+        {
+            var chat = _chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            if (chat.Type is ChatTypePrivate privata)
+            {
+                var fullInfo = ProtoService.GetUserFull(privata.UserId);
+                if (fullInfo == null)
+                {
+                    return;
+                }
+
+                if (fullInfo.IsBlocked)
+                {
+                    UnblockExecute();
+                }
+            }
+            else if (chat.Type is ChatTypeSupergroup super)
+            {
+                var group = ProtoService.GetSupergroup(super.SupergroupId);
+                if (group == null)
+                {
+                    return;
+                }
+
+                if (group.IsChannel)
+                {
+                    if (group.Status is ChatMemberStatusLeft)
+                    {
+                        JoinChannelExecute();
+                    }
+                    else
+                    {
+                        ToggleMuteExecute(chat.NotificationSettings.MuteFor != 0);
+                    }
+                }
+                else
+                {
+                    if (group.Status is ChatMemberStatusLeft)
+                    {
+                        JoinChannelExecute();
+                    }
+                    else if (group.Status is ChatMemberStatusBanned)
+                    {
+                        DialogDeleteExecute();
+                    }
+                }
+            }
+        }
+
+        #endregion
+
+        private MessageViewModel GetMessage(Message message)
+        {
+            return new MessageViewModel(ProtoService, this, message);
+        }
     }
 
-    public class MessageCollection : ObservableCollection<TLMessageBase>
+    //public class TLMessageMediaGroup : TLMessageMediaBase
+    //{
+    //    public TLMessageMediaGroup()
+    //    {
+    //        Layout = new GroupedMessages();
+    //    }
+
+    //    public String Caption { get; set; }
+    //    public GroupedMessages Layout { get; private set; }
+    //}
+
+    public class UserCommand
     {
-        protected override void InsertItem(int index, TLMessageBase item)
+        public UserCommand(int userId, BotCommand command)
         {
+            UserId = userId;
+            Item = command;
+        }
+
+        public int UserId { get; set; }
+        public BotCommand Item { get; set; }
+    }
+
+    public class MessageCollection : MvxObservableCollection<MessageViewModel>
+    {
+        private readonly Dictionary<long, MessageViewModel> _messages = new Dictionary<long, MessageViewModel>();
+        private readonly HashSet<DateTime> _dates = new HashSet<DateTime>();
+
+        public bool ContainsKey(long id)
+        {
+            return _messages.ContainsKey(id);
+        }
+
+        protected override void InsertItem(int index, MessageViewModel item)
+        {
+            _messages[item.Id] = item;
+
+            item.IsFirst = true;
+            item.IsLast = true;
             base.InsertItem(index, item);
 
             var previous = index > 0 ? this[index - 1] : null;
             var next = index < Count - 1 ? this[index + 1] : null;
 
-            //if (next is TLMessageEmpty)
-            //{
-            //    next = index > 1 ? this[index - 2] : null;
-            //}
-            //if (previous is TLMessageEmpty)
-            //{
-            //    previous = index < Count - 2 ? this[index + 2] : null;
-            //}
-
             UpdateSeparatorOnInsert(item, next, index);
             UpdateSeparatorOnInsert(previous, item, index - 1);
 
-            UpdateAttach(next, item, index + 1);
-            UpdateAttach(item, previous, index);
+            //UpdateAttach(next, item, index + 1);
+            //UpdateAttach(item, previous, index);
         }
 
         protected override void RemoveItem(int index)
         {
+            _messages.Remove(this[index].Id);
+
             var next = index > 0 ? this[index - 1] : null;
             var previous = index < Count - 1 ? this[index + 1] : null;
 
-            UpdateAttach(previous, next, index + 1);
+            //UpdateAttach(previous, next, index + 1);
 
             base.RemoveItem(index);
 
             UpdateSeparatorOnRemove(next, previous, index);
         }
 
-        private void UpdateSeparatorOnInsert(TLMessageBase item, TLMessageBase previous, int index)
+        private static MessageViewModel ShouldUpdateSeparatorOnInsert(MessageViewModel item, MessageViewModel previous, int index)
         {
             if (item != null && previous != null)
             {
@@ -1903,49 +2743,73 @@ namespace Unigram.ViewModels
                 var previousDate = Utils.UnixTimestampToDateTime(previous.Date);
                 if (previousDate.Date != itemDate.Date)
                 {
-                    var timestamp = (int)Utils.DateTimeToUnixTimestamp(previousDate.Date);
-                    var service = new TLMessageService
-                    {
-                        Date = timestamp,
-                        FromId = SettingsHelper.UserId,
-                        HasFromId = true,
-                        Action = new TLMessageActionDate
-                        {
-                            Date = timestamp
-                        }
-                    };
+                    var timestamp = previousDate.ToTimestamp();
+                    var service = new MessageViewModel(previous.ProtoService, previous.Delegate, new Message(0, previous.SenderUserId, previous.ChatId, null, previous.IsOutgoing, false, false, true, false, previous.IsChannelPost, false, previous.Date, 0, null, 0, 0, 0, 0, string.Empty, 0, 0, new MessageHeaderDate(), null));
 
-                    base.InsertItem(index + 1, service);
+                    //base.InsertItem(index + 1, service);
+                    return service;
                 }
             }
+
+            return null;
         }
 
-        private void UpdateSeparatorOnRemove(TLMessageBase next, TLMessageBase previous, int index)
+        private void UpdateSeparatorOnInsert(MessageViewModel item, MessageViewModel previous, int index)
         {
-            if (next is TLMessageService && previous != null)
+            var service = ShouldUpdateSeparatorOnInsert(item, previous, index);
+            if (service != null)
             {
-                var action = ((TLMessageService)next).Action as TLMessageActionDate;
-                if (action != null)
-                {
-                    var itemDate = Utils.UnixTimestampToDateTime(action.Date);
-                    var previousDate = Utils.UnixTimestampToDateTime(previous.Date);
-                    if (previousDate.Date != itemDate.Date)
-                    {
-                        base.RemoveItem(index - 1);
-                    }
-                }
-            }
-            else if (next is TLMessageService && previous == null)
-            {
-                var action = ((TLMessageService)next).Action as TLMessageActionDate;
-                if (action != null)
-                {
-                    base.RemoveItem(index - 1);
-                }
+                base.InsertItem(index + 1, service);
             }
         }
 
-        private void UpdateAttach(TLMessageBase item, TLMessageBase previous, int index)
+        //private static void UpdateSeparatorOnInsert(IList<TLMessageBase> items, TLMessageBase item, TLMessageBase previous, int index)
+        //{
+        //    var service = ShouldUpdateSeparatorOnInsert(item, previous, index);
+        //    if (service != null)
+        //    {
+        //        items.Insert(index + 1, service);
+        //    }
+        //}
+
+        private static bool ShouldUpdateSeparatorOnRemove(MessageViewModel next, MessageViewModel previous, int index)
+        {
+            if (next != null && next.Content is MessageHeaderDate && previous != null)
+            {
+                var itemDate = Utils.UnixTimestampToDateTime(next.Date);
+                var previousDate = Utils.UnixTimestampToDateTime(previous.Date);
+                if (previousDate.Date != itemDate.Date)
+                {
+                    //base.RemoveItem(index - 1);
+                    return true;
+                }
+            }
+            else if (next != null && next.Content is MessageHeaderDate && previous == null)
+            {
+                //base.RemoveItem(index - 1);
+                return true;
+            }
+
+            return false;
+        }
+
+        private void UpdateSeparatorOnRemove(MessageViewModel next, MessageViewModel previous, int index)
+        {
+            if (ShouldUpdateSeparatorOnRemove(next, previous, index))
+            {
+                base.RemoveItem(index - 1);
+            }
+        }
+
+        //private static void UpdateSeparatorOnRemove(IList<TLMessageBase> items, TLMessageBase next, TLMessageBase previous, int index)
+        //{
+        //    if (ShouldUpdateSeparatorOnRemove(next, previous, index))
+        //    {
+        //        items.RemoveAt(index - 1);
+        //    }
+        //}
+
+        private static void UpdateAttach(MessageViewModel item, MessageViewModel previous, int index)
         {
             if (item == null)
             {
@@ -1958,21 +2822,20 @@ namespace Unigram.ViewModels
             }
 
             var oldFirst = item.IsFirst;
-            var isItemPost = false;
-            if (item is TLMessage) isItemPost = ((TLMessage)item).IsPost;
 
-            if (!isItemPost)
+            var itemPost = item.IsChannelPost;
+
+            if (!itemPost)
             {
                 var attach = false;
                 if (previous != null)
                 {
-                    var isPreviousPost = false;
-                    if (previous is TLMessage) isPreviousPost = ((TLMessage)previous).IsPost;
+                    var previousPost = previous.IsChannelPost;
 
-                    attach = !isPreviousPost &&
-                             !(previous is TLMessageService && !(((TLMessageService)previous).Action is TLMessageActionPhoneCall)) &&
-                             !(previous is TLMessageEmpty) &&
-                             previous.FromId == item.FromId &&
+                    attach = !previousPost &&
+                             //!(previous is TLMessageService && !(((TLMessageService)previous).Action is TLMessageActionPhoneCall)) &&
+                             !(previous.IsService()) &&
+                             AreTogether(item, previous) &&
                              item.Date - previous.Date < 900;
                 }
 
@@ -1980,7 +2843,7 @@ namespace Unigram.ViewModels
 
                 if (previous != null)
                 {
-                    previous.IsLast = item.IsFirst;
+                    previous.IsLast = item.IsFirst || item.IsService();
                 }
             }
             else
@@ -1992,134 +2855,69 @@ namespace Unigram.ViewModels
                     previous.IsLast = false;
                 }
             }
-
-            //if (item.IsFirst && item is TLMessage)
-            //{
-            //    var message = item as TLMessage;
-            //    if (message != null && !message.IsPost && !message.IsOut)
-            //    {
-            //        base.InsertItem(index, new TLMessageEmpty { Date = item.Date, FromId = item.FromId, Id = item.Id, ToId = item.ToId });
-            //    }
-            //}
-
-            //if (!item.IsFirst && oldFirst)
-            //{
-            //    var next = index > 0 ? this[index - 1] : null;
-            //    if (next is TLMessageEmpty)
-            //    {
-            //        Remove(item);
-            //    }
-            //}
         }
 
-        //public ObservableCollection<MessageGroup> Groups { get; private set; } = new ObservableCollection<MessageGroup>();
+        private static bool AreTogether(MessageViewModel message1, MessageViewModel message2)
+        {
+            var saved1 = message1.IsSaved();
+            var saved2 = message2.IsSaved();
+            if (saved1 && saved2)
+            {
+                if (message1.ForwardInfo is MessageForwardedFromUser fromUser1 && message2.ForwardInfo is MessageForwardedFromUser fromUser2)
+                {
+                    return fromUser1.SenderUserId == fromUser2.SenderUserId && fromUser1.ForwardedFromChatId == fromUser2.ForwardedFromChatId;
+                }
+                else if (message1.ForwardInfo is MessageForwardedPost post1 && message2.ForwardInfo is MessageForwardedPost post2)
+                {
+                    return post1.ChatId == post2.ChatId && post1.ForwardedFromChatId == post2.ForwardedFromChatId;
+                }
+            }
+            else if (saved1 || saved2)
+            {
+                return false;
+            }
 
-        //protected override void InsertItem(int index, TLMessageBase item)
-        //{
-        //    base.InsertItem(index, item);
-
-        //    var group = GroupForIndex(index);
-        //    if (group == null || group?.FromId != item.FromId)
-        //    {
-        //        group = new MessageGroup(this, item.From, item.FromId, item.ToId, item is TLMessage ? ((TLMessage)item).IsOut : false);
-        //        Groups.Insert(index == 0 ? 0 : Groups.Count, group); // TODO: should not be 0 all the time
-        //    }
-
-        //    group.Insert(Math.Max(0, index - group.FirstIndex), item);
-        //}
-
-        //protected override void RemoveItem(int index)
-        //{
-        //    base.RemoveItem(index);
-
-        //    var group = GroupForIndex(index);
-        //    if (group != null)
-        //    {
-        //        group.RemoveAt(index - group.FirstIndex);
-        //    }
-        //}
-
-        //private MessageGroup GroupForIndex(int index)
-        //{
-        //    if (index == 0)
-        //    {
-        //        return Groups.FirstOrDefault();
-        //    }
-        //    else if (index == Count - 1)
-        //    {
-        //        return Groups.LastOrDefault();
-        //    }
-        //    else
-        //    {
-        //        return Groups.FirstOrDefault(x => x.FirstIndex >= index && x.LastIndex <= index);
-        //    }
-        //}
+            return message1.SenderUserId == message2.SenderUserId;
+        }
     }
 
-    //public class MessageGroup : ObservableCollection<TLMessageBase>
-    //{
-    //    private ObservableCollection<MessageGroup> _parent;
+    public class MessageEmbedData
+    {
+        public MessageViewModel ReplyToMessage { get; set; }
+        public MessageViewModel EditingMessage { get; set; }
 
-    //    public MessageGroup(MessageCollection parent, TLUser from, int? fromId, TLPeerBase toId, bool isOut)
-    //    {
-    //        _parent = parent.Groups;
+        public WebPage WebPagePreview { get; set; }
+        public string WebPageUrl { get; set; }
 
-    //        From = from;
-    //        if (fromId == null)
-    //            FromId = 33303409;
-    //        FromId = fromId;
-    //        ToId = toId;
-    //        IsOut = isOut;
-    //    }
+        public bool IsWebPageHidden { get; set; }
 
-    //    public TLUser From { get; private set; }
+        public bool IsEmpty
+        {
+            get
+            {
+                return ReplyToMessage == null && EditingMessage == null;
+            }
+        }
 
-    //    public int? FromId { get; private set; }
+        public bool Matches(long messageId)
+        {
+            if (ReplyToMessage != null && ReplyToMessage.Id == messageId)
+            {
+                return true;
+            }
+            else if (EditingMessage != null && EditingMessage.Id == messageId)
+            {
+                return true;
+            }
 
-    //    public TLPeerBase ToId { get; private set; }
+            return false;
+        }
+    }
 
-    //    public bool IsOut { get; private set; }
-
-    //    public int FirstIndex
-    //    {
-    //        get
-    //        {
-    //            var count = 0;
-    //            var index = _parent.IndexOf(this);
-    //            if (index > 0)
-    //            {
-    //                count = _parent[index - 1].LastIndex + 1;
-    //            }
-
-    //            return count;
-    //        }
-    //    }
-
-    //    public int LastIndex
-    //    {
-    //        get
-    //        {
-    //            return FirstIndex + Math.Max(0, Count - 1);
-    //        }
-    //    }
-
-    //    protected override void InsertItem(int index, TLMessageBase item)
-    //    {
-    //        // TODO: experimental
-    //        if (index == 0)
-    //        {
-    //            if (Count > 0)
-    //                this[0].IsFirst = false;
-
-    //            item.IsFirst = true;
-    //        }
-
-    //        base.InsertItem(index, item);
-    //    }
-
-    //    protected override void RemoveItem(int index)
-    //    {
-    //        base.RemoveItem(index);
-    //    }
-    //}
+    public enum ReplyToMessageState
+    {
+        None,
+        Loading,
+        Deleted
+    }
 }

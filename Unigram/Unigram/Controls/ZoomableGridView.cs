@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.TL;
 using Unigram.Views;
 using Unigram.Services;
 using Windows.UI.ViewManagement;
@@ -47,6 +46,18 @@ namespace Unigram.Controls
 
         internal void OnItemHolding(object sender, object item)
         {
+            //if (item is TLBotInlineMediaResult inlineMediaResult)
+            //{
+            //    if (inlineMediaResult.HasDocument)
+            //    {
+            //        item = inlineMediaResult.Document;
+            //    }
+            //    else
+            //    {
+            //        return;
+            //    }
+            //}
+
             var bounds = ApplicationView.GetForCurrentView().VisibleBounds;
             if (bounds != Window.Current.Bounds)
             {
@@ -82,15 +93,28 @@ namespace Unigram.Controls
         {
             if (_popupHost.IsOpen && e.OriginalSource is FrameworkElement element)
             {
-                if (element.DataContext is TLDocument content && _popupContent.Content != content)
-                {
-                    //if (content.StickerSet != null)
-                    //{
-                    //    Debug.WriteLine(string.Join(" ", UnigramContainer.Current.ResolveType<IStickersService>().GetEmojiForSticker(content.Id)));
-                    //}
+                var item = element.DataContext;
+                //if (item is TLBotInlineMediaResult inlineMediaResult)
+                //{
+                //    if (inlineMediaResult.HasDocument)
+                //    {
+                //        item = inlineMediaResult.Document;
+                //    }
+                //    else
+                //    {
+                //        return;
+                //    }
+                //}
 
-                    _popupContent.Content = content;
-                }
+                //if (item is TLDocument content && _popupContent.Content != content)
+                //{
+                //    //if (content.StickerSet != null)
+                //    //{
+                //    //    Debug.WriteLine(string.Join(" ", UnigramContainer.Current.ResolveType<IStickersService>().GetEmojiForSticker(content.Id)));
+                //    //}
+
+                //    _popupContent.Content = content;
+                //}
             }
         }
 

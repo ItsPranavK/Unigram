@@ -19,19 +19,8 @@ namespace Unigram.Views
     {
         public BlankPage()
         {
-            this.InitializeComponent();
-        }
-
-        protected override void OnNavigatedTo(NavigationEventArgs e)
-        {
-            if (App.InMemoryState.ForwardMessages != null)
-            {
-                EmptyLabel.Text = "Choose a recipient...";
-            }
-            else
-            {
-                EmptyLabel.Text = "Please select a chat to start messaging";
-            }
+            InitializeComponent();
+            DataContext = new object();
         }
     }
 }

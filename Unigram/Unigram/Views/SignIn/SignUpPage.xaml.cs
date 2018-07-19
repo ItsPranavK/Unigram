@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
-using Telegram.Api.TL;
 using Unigram.Views;
 using Unigram.ViewModels.SignIn;
 using Windows.Foundation;
@@ -15,6 +14,8 @@ using Windows.UI.Xaml.Data;
 using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
+using Unigram.Common;
+using Telegram.Td.Api;
 
 namespace Unigram.Views.SignIn
 {
@@ -25,19 +26,24 @@ namespace Unigram.Views.SignIn
         public SignUpPage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<SignUpViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<SignUpViewModel>();
+
+            ViewModel.PropertyChanged += OnPropertyChanged;
+        }
+
+        private void OnPropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            switch (e.PropertyName)
+            {
+                case "FIRSTNAME_INVALID":
+                    VisualUtilities.ShakeView(PrimaryInput);
+                    break;
+            }
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)
         {
             PrimaryInput.Focus(FocusState.Keyboard);
-        }
-
-        public class NavigationParameters
-        {
-            public string PhoneNumber { get; set; }
-            public string PhoneCode { get; set; }
-            public TLAuthSentCode Result { get; set; }
         }
     }
 }

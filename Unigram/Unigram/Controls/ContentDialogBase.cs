@@ -21,17 +21,23 @@ using Template10.Services.NavigationService;
 using Template10.Services.ViewService;
 using Windows.UI.Xaml.Media.Animation;
 using Windows.UI.Xaml.Input;
+using Unigram.Core.Helpers;
+using Windows.System;
+using Unigram.Common;
 
 namespace Unigram.Controls
 {
     public class ContentDialogBase : ContentControl
     {
+        private int _lastHide;
+
         private ApplicationView _applicationView;
         private Popup _popupHost;
 
         private TaskCompletionSource<ContentDialogBaseResult> _callback;
         private ContentDialogBaseResult _result;
 
+        protected Border Container;
         protected Border BackgroundElement;
         private AppViewBackButtonVisibility BackButtonVisibility;
 
@@ -51,9 +57,14 @@ namespace Unigram.Controls
 
         private void OnVisibleBoundsChanged(ApplicationView sender, object args)
         {
-            if (BackgroundElement != null && sender.VisibleBounds != Window.Current.Bounds)
+            if (sender == null)
             {
-                Margin = new Thickness(sender.VisibleBounds.X, sender.VisibleBounds.Y, Window.Current.Bounds.Width - sender.VisibleBounds.Right, Window.Current.Bounds.Height - sender.VisibleBounds.Bottom);
+                return;
+            }
+
+            if (/*BackgroundElement != null &&*/ Window.Current?.Bounds is Rect bounds && sender.VisibleBounds != bounds)
+            {
+                Margin = new Thickness(sender.VisibleBounds.X - bounds.Left, sender.VisibleBounds.Y - bounds.Top, bounds.Width - (sender.VisibleBounds.Right - bounds.Left), bounds.Height - (sender.VisibleBounds.Bottom - bounds.Top));
                 UpdateViewBase();
             }
             else
@@ -66,7 +77,7 @@ namespace Unigram.Controls
         protected virtual void MaskTitleAndStatusBar()
         {
             var titlebar = ApplicationView.GetForCurrentView().TitleBar;
-            var backgroundBrush = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
+            var backgroundBrush = Application.Current.Resources["TelegramTitleBarBackgroundBrush"] as SolidColorBrush;
             var foregroundBrush = Application.Current.Resources["SystemControlForegroundBaseHighBrush"] as SolidColorBrush;
             var overlayBrush = OverlayBrush as SolidColorBrush;
 
@@ -92,7 +103,7 @@ namespace Unigram.Controls
         protected void UnmaskTitleAndStatusBar()
         {
             var titlebar = ApplicationView.GetForCurrentView().TitleBar;
-            var backgroundBrush = Application.Current.Resources["TelegramBackgroundTitlebarBrush"] as SolidColorBrush;
+            var backgroundBrush = Application.Current.Resources["TelegramTitleBarBackgroundBrush"] as SolidColorBrush;
             var foregroundBrush = Application.Current.Resources["SystemControlForegroundBaseHighBrush"] as SolidColorBrush;
 
             titlebar.BackgroundColor = backgroundBrush.Color;
@@ -151,6 +162,8 @@ namespace Unigram.Controls
                     navigable.NavigationService = new ContentDialogNavigationService(this);
                 }
 
+                var previous = _callback;
+
                 _result = ContentDialogBaseResult.None;
                 _callback = new TaskCompletionSource<ContentDialogBaseResult>();
 
@@ -162,9 +175,21 @@ namespace Unigram.Controls
                     _popupHost = new Popup();
                     _popupHost.Child = this;
                     _popupHost.Loading += PopupHost_Loading;
+                    _popupHost.Loaded += PopupHostLoaded;
                     _popupHost.Opened += PopupHost_Opened;
                     _popupHost.Closed += PopupHost_Closed;
+                    this.Unloaded += PopupHost_Unloaded;
                 }
+
+                // Cool down
+                if (previous != null)
+                {
+                    await previous.Task;
+                }
+                //if (Environment.TickCount - _lastHide < 500)
+                //{
+                //    await Task.Delay(200);
+                //}
 
                 _popupHost.IsOpen = true;
 
@@ -172,9 +197,19 @@ namespace Unigram.Controls
             });
         }
 
+        private void PopupHost_Unloaded(object sender, RoutedEventArgs e)
+        {
+            _callback.TrySetResult(_result);
+        }
+
         private void PopupHost_Loading(FrameworkElement sender, object args)
         {
             OnVisibleBoundsChanged(_applicationView, null);
+        }
+
+        private void PopupHostLoaded(object sender, RoutedEventArgs e)
+        {
+            Focus(FocusState.Programmatic);
         }
 
         private void PopupHost_Opened(object sender, object e)
@@ -185,6 +220,7 @@ namespace Unigram.Controls
             //SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = AppViewBackButtonVisibility.Visible;
             _applicationView.VisibleBoundsChanged += OnVisibleBoundsChanged;
             BootStrapper.BackRequested += OnBackRequested;
+            WindowContext.GetForCurrentView().AcceleratorKeyActivated += Dispatcher_AcceleratorKeyActivated;
             //Window.Current.SizeChanged += OnSizeChanged;
 
             OnVisibleBoundsChanged(_applicationView, null);
@@ -194,17 +230,30 @@ namespace Unigram.Controls
         {
             UnmaskTitleAndStatusBar();
 
-            _callback.TrySetResult(_result);
+            //_callback.TrySetResult(_result);
 
             //SystemNavigationManager.GetForCurrentView().AppViewBackButtonVisibility = BackButtonVisibility;
             _applicationView.VisibleBoundsChanged -= OnVisibleBoundsChanged;
             BootStrapper.BackRequested -= OnBackRequested;
+            WindowContext.GetForCurrentView().AcceleratorKeyActivated -= Dispatcher_AcceleratorKeyActivated;
         }
 
         private void OnBackRequested(object sender, HandledEventArgs e)
         {
-            BootStrapper.BackRequested -= OnBackRequested;
+            //BootStrapper.BackRequested -= OnBackRequested;
             OnBackRequestedOverride(sender, e);
+        }
+
+        private void Dispatcher_AcceleratorKeyActivated(CoreDispatcher sender, AcceleratorKeyEventArgs args)
+        {
+            if (args.VirtualKey == VirtualKey.Escape && !args.KeyStatus.IsKeyReleased)
+            {
+                WindowContext.GetForCurrentView().AcceleratorKeyActivated -= Dispatcher_AcceleratorKeyActivated;
+
+                var e = new HandledEventArgs();
+                OnBackRequestedOverride(sender, e);
+                args.Handled = e.Handled;
+            }
         }
 
         protected virtual void OnBackRequestedOverride(object sender, HandledEventArgs e)
@@ -219,6 +268,19 @@ namespace Unigram.Controls
             Closing?.Invoke(this, EventArgs.Empty);
         }
 
+        public void TryHide(ContentDialogBaseResult result)
+        {
+            var e = new HandledEventArgs();
+            OnBackRequestedOverride(this, e);
+
+            if (e.Handled)
+            {
+                return;
+            }
+
+            Hide(result);
+        }
+
         public void Hide()
         {
             Hide(ContentDialogBaseResult.None);
@@ -226,13 +288,37 @@ namespace Unigram.Controls
 
         public void Hide(ContentDialogBaseResult result)
         {
+            BootStrapper.BackRequested -= OnBackRequested;
+
+            if (_popupHost == null || !_popupHost.IsOpen)
+            {
+                return;
+            }
+
+            _lastHide = Environment.TickCount;
             _result = result;
             _popupHost.IsOpen = false;
         }
 
         protected override void OnApplyTemplate()
         {
+            Container = (Border)GetTemplateChild("Container");
             BackgroundElement = (Border)GetTemplateChild("BackgroundElement");
+
+            OnVisibleBoundsChanged(_applicationView, null);
+
+            Container.Tapped += Outside_Tapped;
+            BackgroundElement.Tapped += Inside_Tapped;
+        }
+
+        private void Inside_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            e.Handled = true;
+        }
+
+        private void Outside_Tapped(object sender, TappedRoutedEventArgs e)
+        {
+            Hide();
         }
 
         private void OnSizeChanged(object sender, WindowSizeChangedEventArgs e)
@@ -387,7 +473,7 @@ namespace Unigram.Controls
 
         public void GoBack(NavigationTransitionInfo infoOverride = null)
         {
-            _contentDialog.Hide(ContentDialogBaseResult.None);
+            _contentDialog.TryHide(ContentDialogBaseResult.None);
         }
 
         public object Content => throw new NotImplementedException();
@@ -398,7 +484,7 @@ namespace Unigram.Controls
 
         public string NavigationState { get => throw new NotImplementedException(); set => throw new NotImplementedException(); }
 
-        public object CurrentPageParam => throw new NotImplementedException();
+        public object CurrentPageParam => null;
 
         public Type CurrentPageType => throw new NotImplementedException();
 

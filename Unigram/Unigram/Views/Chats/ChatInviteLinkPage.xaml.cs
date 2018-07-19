@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices.WindowsRuntime;
+using Unigram.Common;
 using Unigram.ViewModels.Chats;
 using Windows.ApplicationModel.DataTransfer;
 using Windows.Foundation;
@@ -29,7 +30,7 @@ namespace Unigram.Views.Chats
         public ChatInviteLinkPage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<ChatInviteLinkViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<ChatInviteLinkViewModel>();
         }
 
         protected override void OnNavigatedTo(NavigationEventArgs e)
@@ -46,8 +47,8 @@ namespace Unigram.Views.Chats
         {
             if (ViewModel.InviteLink != null)
             {
-                args.Request.Data.Properties.Title = ViewModel.Item.DisplayName;
-                args.Request.Data.SetWebLink(new Uri(ViewModel.InviteLink));
+                //args.Request.Data.Properties.Title = ViewModel.Item.DisplayName;
+                //args.Request.Data.SetWebLink(new Uri(ViewModel.InviteLink));
             }
         }
 
@@ -55,5 +56,20 @@ namespace Unigram.Views.Chats
         {
             DataTransferManager.ShowShareUI();
         }
+
+        #region Binding
+
+        private string ConvertType(string broadcast, string mega)
+        {
+            //if (ViewModel.Item is TLChannel channel)
+            //{
+            //    return Locale.GetString(channel.IsBroadcast ? broadcast : mega);
+            //}
+
+            return Locale.GetString(mega);
+        }
+
+        #endregion
+
     }
 }

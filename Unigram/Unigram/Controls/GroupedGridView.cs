@@ -10,7 +10,7 @@ using Windows.UI.Xaml.Data;
 
 namespace Unigram.Controls
 {
-    public class GroupedGridView : GridView
+    public class GroupedGridView : SelectGridView
     {
         public ScrollViewer ScrollingHost { get; private set; }
         public ItemsWrapGrid ItemsStack { get; private set; }
@@ -18,6 +18,18 @@ namespace Unigram.Controls
         public GroupedGridView()
         {
             Loaded += OnLoaded;
+
+            RegisterPropertyChangedCallback(ItemsSourceProperty, OnItemsSourceChanged);
+        }
+
+        private async void OnItemsSourceChanged(DependencyObject sender, DependencyProperty dp)
+        {
+            if (IncrementalSource != null && IncrementalSource.HasMoreItems && !_isAlreadyLoading)
+            {
+                _isAlreadyLoading = true;
+                await IncrementalSource.LoadMoreItemsAsync(0);
+                _isAlreadyLoading = false;
+            }
         }
 
         protected override void OnApplyTemplate()

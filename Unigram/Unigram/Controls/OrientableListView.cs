@@ -8,13 +8,23 @@ using Windows.UI.Xaml.Controls;
 
 namespace Unigram.Controls
 {
-    public class OrientableListView : ListView
+    public class OrientableListView : ZoomableGridView
     {
         private bool _needUpdate;
 
+        public ScrollViewer ScrollingHost { get; private set; }
+
         public OrientableListView()
         {
+            DefaultStyleKey = typeof(OrientableListView);
             ChoosingItemContainer += OnChoosingItemContainer;
+        }
+
+        protected override void OnApplyTemplate()
+        {
+            ScrollingHost = (ScrollViewer)GetTemplateChild("ScrollViewer");
+
+            base.OnApplyTemplate();
         }
 
         private void OnChoosingItemContainer(ListViewBase sender, ChoosingItemContainerEventArgs args)

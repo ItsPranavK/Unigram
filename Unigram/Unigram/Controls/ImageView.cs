@@ -7,8 +7,9 @@ using Windows.UI.Xaml;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Media;
 using Windows.Foundation;
-using Telegram.Api.TL;
 using Windows.UI.Xaml.Media.Imaging;
+using Telegram.Td.Api;
+using Unigram.ViewModels;
 
 namespace Unigram.Controls
 {
@@ -74,6 +75,19 @@ namespace Unigram.Controls
 
         #endregion
 
+        #region Stretch
+
+        public Stretch Stretch
+        {
+            get { return (Stretch)GetValue(StretchProperty); }
+            set { SetValue(StretchProperty, value); }
+        }
+
+        public static readonly DependencyProperty StretchProperty =
+            DependencyProperty.Register("Stretch", typeof(Stretch), typeof(ImageView), new PropertyMetadata(Stretch.Uniform));
+
+        #endregion
+
         #region Constraint
 
         public object Constraint
@@ -107,80 +121,140 @@ namespace Unigram.Controls
             var availableWidth = Math.Min(availableSize.Width, Math.Min(double.IsNaN(Width) ? double.PositiveInfinity : Width, MaxWidth));
             var availableHeight = Math.Min(availableSize.Height, Math.Min(double.IsNaN(Height) ? double.PositiveInfinity : Height, MaxHeight));
 
+            var ttl = false;
             var width = 0.0;
             var height = 0.0;
 
             var constraint = Constraint;
+            if (constraint is MessageViewModel viewModel)
+            {
+                ttl = viewModel.Ttl > 0;
+                constraint = viewModel.Content;
+            }
+            else if (constraint is Message message)
+            {
+                ttl = message.Ttl > 0;
+                constraint = message.Content;
+            }
 
-            if (constraint is TLMessageMediaGeo || constraint is TLMessageMediaVenue)
+            if (constraint is MessageAnimation animationMessage)
+            {
+                constraint = animationMessage.Animation;
+            }
+            else if (constraint is MessageInvoice invoiceMessage)
+            {
+                constraint = invoiceMessage.Photo;
+            }
+            else if (constraint is MessageLocation locationMessage)
+            {
+                constraint = locationMessage.Location;
+            }
+            else if (constraint is MessagePhoto photoMessage)
+            {
+                constraint = photoMessage.Photo;
+            }
+            else if (constraint is MessageSticker stickerMessage)
+            {
+                constraint = stickerMessage.Sticker;
+            }
+            else if (constraint is MessageText textMessage)
+            {
+                if (textMessage?.WebPage?.Animation != null)
+                {
+                    constraint = textMessage?.WebPage?.Animation;
+                }
+                else if (textMessage?.WebPage?.Document != null)
+                {
+                    constraint = textMessage?.WebPage?.Document;
+                }
+                else if (textMessage?.WebPage?.Photo != null)
+                {
+                    constraint = textMessage?.WebPage?.Photo;
+                }
+                else if (textMessage?.WebPage?.Sticker != null)
+                {
+                    constraint = textMessage?.WebPage?.Sticker;
+                }
+                else if (textMessage?.WebPage?.Video != null)
+                {
+                    constraint = textMessage?.WebPage?.Video;
+                }
+                else if (textMessage?.WebPage?.VideoNote != null)
+                {
+                    constraint = textMessage?.WebPage?.VideoNote;
+                }
+            }
+            else if (constraint is MessageVenue venueMessage)
+            {
+                constraint = venueMessage.Venue;
+            }
+            else if (constraint is MessageVideo videoMessage)
+            {
+                constraint = videoMessage.Video;
+            }
+            else if (constraint is MessageVideoNote videoNoteMessage)
+            {
+                constraint = videoNoteMessage.VideoNote;
+            }
+
+            if (constraint is Animation animation)
+            {
+                width = animation.Width;
+                height = animation.Height;
+            }
+            else if (constraint is Location location)
             {
                 width = 320;
                 height = 240;
-
-                goto Calculate;
             }
-
-            if (constraint is TLMessageMediaPhoto photoMedia)
+            else if (constraint is Photo photo)
             {
-                constraint = photoMedia.Photo;
-            }
-
-            if (constraint is TLMessageMediaDocument documentMedia)
-            {
-                constraint = documentMedia.Document;
-            }
-
-            if (constraint is TLPhoto photo)
-            {
-                //var photoSize = photo.Sizes.OrderByDescending(x => x.W).FirstOrDefault();
-                var photoSize = photo.Sizes.OfType<TLPhotoSize>().OrderByDescending(x => x.W).FirstOrDefault();
-                if (photoSize != null)
+                if (ttl)
                 {
-                    width = photoSize.W;
-                    height = photoSize.H;
-
-                    goto Calculate;
+                    width = 240;
+                    height = 240;
+                }
+                else
+                {
+                    constraint = photo.Sizes.OrderByDescending(x => x.Width).FirstOrDefault();
                 }
             }
-
-            if (constraint is TLDocument document)
+            else if (constraint is Sticker sticker)
             {
-                constraint = document.Attributes;
+                width = sticker.Width;
+                height = sticker.Height;
             }
-
-            if (constraint is TLWebDocument webDocument)
+            else if (constraint is Venue venue)
             {
-                constraint = webDocument.Attributes;
+                width = 320;
+                height = 240;
             }
-
-            if (constraint is TLVector<TLDocumentAttributeBase> attributes)
-            { 
-                var imageSize = attributes.OfType<TLDocumentAttributeImageSize>().FirstOrDefault();
-                if (imageSize != null)
+            else if (constraint is Video video)
+            {
+                if (ttl)
                 {
-                    width = imageSize.W;
-                    height = imageSize.H;
-
-                    goto Calculate;
+                    width = 240;
+                    height = 240;
                 }
-
-                var video = attributes.OfType<TLDocumentAttributeVideo>().FirstOrDefault();
-                if (video != null)
+                else
                 {
-                    width = video.W;
-                    height = video.H;
-
-                    goto Calculate;
+                    width = video.Width;
+                    height = video.Height;
                 }
             }
-
-            if (constraint is TLBotInlineResult inlineResult)
+            else if (constraint is VideoNote videoNote)
             {
-                width = inlineResult.HasW ? inlineResult.W.Value : 0;
-                height = inlineResult.HasH ? inlineResult.H.Value : 0;
-
-                goto Calculate;
+                width = 200;
+                height = 200;
             }
+
+            if (constraint is PhotoSize photoSize)
+            {
+                width = photoSize.Width;
+                height = photoSize.Height;
+            }
+
+
 
             Calculate:
             if (width > availableWidth || height > availableHeight)

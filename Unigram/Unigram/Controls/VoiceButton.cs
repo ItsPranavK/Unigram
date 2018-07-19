@@ -5,11 +5,14 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Telegram.Api.Helpers;
+using Unigram.Common;
 using Unigram.Controls.Views;
+using Unigram.Converters;
+using Unigram.Core.Common;
 using Unigram.Native;
 using Unigram.ViewModels;
 using Windows.Devices.Enumeration;
+using Windows.Foundation;
 using Windows.Foundation.Collections;
 using Windows.Media;
 using Windows.Media.Capture;
@@ -31,6 +34,7 @@ namespace Unigram.Controls
         private OpusRecorder _recorder;
         private StorageFile _file;
         private bool _cancelOnRelease;
+        private bool _cancelPointer;
         private bool _pressed;
         private bool _recording;
         private DateTime _start;
@@ -89,9 +93,20 @@ namespace Unigram.Controls
             };
         }
 
-        protected override void OnPointerPressed(PointerRoutedEventArgs e)
+        protected override async void OnPointerPressed(PointerRoutedEventArgs e)
         {
-            //Start();
+            var chat = ViewModel.Chat;
+            if (chat == null)
+            {
+                return;
+            }
+
+            var restricted = await ViewModel.VerifyRightsAsync(chat, x => x.CanSendMediaMessages, Strings.Resources.AttachMediaRestrictedForever, Strings.Resources.AttachMediaRestricted);
+            if (restricted)
+            {
+                return;
+            }
+
             _timer.Stop();
             _timer.Start();
 
@@ -104,13 +119,18 @@ namespace Unigram.Controls
         protected override void OnPointerReleased(PointerRoutedEventArgs e)
         {
             base.OnPointerReleased(e);
+            ReleasePointerCapture(e.Pointer);
+
+            if (_cancelPointer)
+            {
+                _cancelPointer = false;
+                return;
+            }
 
             _timer.Stop();
             _pressed = false;
 
             //Stop();
-            ReleasePointerCapture(e.Pointer);
-
             if (_recording)
             {
                 Stop();
@@ -118,26 +138,6 @@ namespace Unigram.Controls
             else
             {
                 IsVideo = !IsVideo;
-            }
-        }
-
-        protected override void OnPointerEntered(PointerRoutedEventArgs e)
-        {
-            base.OnPointerEntered(e);
-
-            if (_pressed)
-            {
-                _cancelOnRelease = false;
-            }
-        }
-
-        protected override void OnPointerExited(PointerRoutedEventArgs e)
-        {
-            base.OnPointerExited(e);
-
-            if (_pressed)
-            {
-                _cancelOnRelease = true;
             }
         }
 
@@ -153,7 +153,7 @@ namespace Unigram.Controls
                 _recording = true;
                 _start = DateTime.Now;
 
-                Execute.BeginOnUIThread(() =>
+                this.BeginOnUIThread(() =>
                 {
                     if (_video)
                     {
@@ -181,22 +181,58 @@ namespace Unigram.Controls
                 {
                     _recorder.m_mediaCapture = new MediaCapture();
 
-                    _recorder.settings.VideoDeviceId = await _recorder.GetVideoProfileSupportedDeviceIdAsync(Windows.Devices.Enumeration.Panel.Front);
-                    await _recorder.m_mediaCapture.InitializeAsync(_recorder.settings);
-
-                    if (_video)
+                    var cameraDevice = await _recorder.FindCameraDeviceByPanelAsync(Windows.Devices.Enumeration.Panel.Front);
+                    if (cameraDevice == null)
                     {
-                        await _roundView.SetAsync(_recorder.m_mediaCapture);
+                        // TODO: ...
                     }
 
-                    await _recorder.StartAsync();
+                    // Figure out where the camera is located
+                    if (cameraDevice.EnclosureLocation == null || cameraDevice.EnclosureLocation.Panel == Windows.Devices.Enumeration.Panel.Unknown)
+                    {
+                        // No information on the location of the camera, assume it's an external camera, not integrated on the device
+                        _recorder._externalCamera = true;
+                    }
+                    else
+                    {
+                        // Camera is fixed on the device
+                        _recorder._externalCamera = false;
+
+                        // Only mirror the preview if the camera is on the front panel
+                        _recorder._mirroringPreview = (cameraDevice.EnclosureLocation.Panel == Windows.Devices.Enumeration.Panel.Front);
+                    }
+
+                    _recorder.settings.VideoDeviceId = cameraDevice.Id;
+                    await _recorder.m_mediaCapture.InitializeAsync(_recorder.settings);
+
+                    await Dispatcher.RunAsync(Windows.UI.Core.CoreDispatcherPriority.Normal, async () =>
+                    {
+                        if (_video)
+                        {
+                            // Initialize rotationHelper
+                            _recorder._rotationHelper = new CameraRotationHelper(cameraDevice.EnclosureLocation);
+                            _recorder._rotationHelper.OrientationChanged += RotationHelper_OrientationChanged;
+
+                            await _roundView.SetAsync(_recorder.m_mediaCapture, _recorder._mirroringPreview);
+                            await _recorder.SetPreviewRotationAsync();
+                        }
+
+                        await _recorder.StartAsync();
+
+                        if (_video)
+                        {
+                            _roundView.IsOpen = true;
+                        }
+
+                        RecordingStarted?.Invoke(this, EventArgs.Empty);
+                    });
                 }
                 catch (UnauthorizedAccessException)
                 {
                     Debug.WriteLine("The access to microphone was denied!");
                     return;
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
                     Debug.WriteLine("The app couldn't initialize microphone!");
                     return;
@@ -212,6 +248,27 @@ namespace Unigram.Controls
             });
         }
 
+        private async void RotationHelper_OrientationChanged(object sender, bool updatePreview)
+        {
+            if (updatePreview)
+            {
+                await _recorder.SetPreviewRotationAsync();
+            }
+        }
+
+        public void CancelRecording()
+        {
+            _timer.Stop();
+            _pressed = false;
+
+            if (_recording)
+            {
+                _cancelPointer = true;
+                _cancelOnRelease = true;
+                Stop();
+            }
+        }
+
         private void Stop()
         {
             Task.Run(async () =>
@@ -221,7 +278,7 @@ namespace Unigram.Controls
 
                 _recording = false;
 
-                Execute.BeginOnUIThread(() =>
+                this.BeginOnUIThread(() =>
                 {
                     if (_video)
                     {
@@ -259,13 +316,13 @@ namespace Unigram.Controls
                 {
                     Debug.WriteLine("Sending voice message");
 
-                    Execute.BeginOnUIThread(async () =>
+                    this.BeginOnUIThread(async () =>
                     {
                         if (_video)
                         {
                             var props = await _file.Properties.GetVideoPropertiesAsync();
-                            var width = props.Width;
-                            var height = props.Height;
+                            var width = props.GetWidth();
+                            var height = props.GetHeight();
                             var x = 0d;
                             var y = 0d;
 
@@ -284,17 +341,18 @@ namespace Unigram.Controls
                             var transform = new VideoTransformEffectDefinition();
                             transform.CropRectangle = new Windows.Foundation.Rect(x, y, width, height);
                             transform.OutputSize = new Windows.Foundation.Size(240, 240);
+                            transform.Mirror = _recorder._mirroringPreview ? MediaMirroringOptions.Horizontal : MediaMirroringOptions.None;
 
                             var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Vga);
                             profile.Video.Width = 240;
                             profile.Video.Height = 240;
                             profile.Video.Bitrate = 300000;
 
-                            await ViewModel.SendVideoAsync(_file, null, true, transform, profile);
+                            await ViewModel.SendVideoNoteAsync(_file, profile, transform);
                         }
                         else
                         {
-                            await ViewModel.SendAudioAsync(_file, (int)elapsed.TotalSeconds, true, null, null, null);
+                            await ViewModel.SendVoiceNoteAsync(_file, (int)elapsed.TotalSeconds, null);
                         }
                     });
                 }
@@ -315,6 +373,13 @@ namespace Unigram.Controls
             private LowLagMediaRecording m_lowLag;
             public MediaCapture m_mediaCapture;
             public MediaCaptureInitializationSettings settings;
+
+            // Information about the camera device
+            public bool _mirroringPreview;
+            public bool _externalCamera;
+
+            // Rotation Helper to simplify handling rotation compensation for the camera streams
+            public CameraRotationHelper _rotationHelper;
 
             #endregion
 
@@ -355,21 +420,16 @@ namespace Unigram.Controls
                 settings.StreamingCaptureMode = m_isVideo ? StreamingCaptureMode.AudioAndVideo : StreamingCaptureMode.Audio;
             }
 
-            public async Task<string> GetVideoProfileSupportedDeviceIdAsync(Windows.Devices.Enumeration.Panel panel)
+            public async Task<DeviceInformation> FindCameraDeviceByPanelAsync(Windows.Devices.Enumeration.Panel desiredPanel)
             {
-                var deviceId = string.Empty;
-                var devices = await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture);
+                // Get available devices for capturing pictures
+                var allVideoDevices = await DeviceInformation.FindAllAsync(DeviceClass.VideoCapture);
 
-                foreach (var device in devices)
-                {
-                    if (MediaCapture.IsVideoProfileSupported(device.Id) && device.EnclosureLocation.Panel == panel)
-                    {
-                        deviceId = device.Id;
-                        break;
-                    }
-                }
+                // Get the desired camera by panel
+                DeviceInformation desiredDevice = allVideoDevices.FirstOrDefault(x => x.EnclosureLocation != null && x.EnclosureLocation.Panel == desiredPanel);
 
-                return deviceId;
+                // If there is no device mounted on the desired panel, return the first device found
+                return desiredDevice ?? allVideoDevices.FirstOrDefault();
             }
 
             public async Task StartAsync()
@@ -378,7 +438,9 @@ namespace Unigram.Controls
 
                 if (m_isVideo)
                 {
-                    var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Vga);
+                    var profile = MediaEncodingProfile.CreateMp4(VideoEncodingQuality.Auto);
+                    var rotationAngle = CameraRotationHelper.ConvertSimpleOrientationToClockwiseDegrees(_rotationHelper.GetCameraCaptureOrientation());
+                    profile.Video.Properties.Add(new Guid("C380465D-2271-428C-9B83-ECEA3B4A85C1"), PropertyValue.CreateInt32(rotationAngle));
 
                     m_lowLag = await m_mediaCapture.PrepareLowLagRecordToStorageFileAsync(profile, m_file);
 
@@ -399,26 +461,43 @@ namespace Unigram.Controls
 
             public async Task StopAsync()
             {
-                if (m_lowLag != null)
+                try
                 {
-                    await m_lowLag.StopAsync();
-                }
-                else
-                {
-                    await m_mediaCapture.StopRecordAsync();
-                }
+                    if (m_lowLag != null)
+                    {
+                        await m_lowLag.StopAsync();
+                        await m_lowLag.FinishAsync();
+                    }
+                    else
+                    {
+                        await m_mediaCapture.StopRecordAsync();
+                    }
 
-                m_mediaCapture.Dispose();
-                m_mediaCapture = null;
+                    m_mediaCapture.Dispose();
+                    m_mediaCapture = null;
 
-                if (m_opusSink is IDisposable disposable)
-                {
-                    disposable.Dispose();
-                    m_opusSink = null;
+                    if (m_opusSink is IDisposable disposable)
+                    {
+                        disposable.Dispose();
+                        m_opusSink = null;
+                    }
                 }
+                catch { }
             }
 
             #endregion
+
+            public async Task SetPreviewRotationAsync()
+            {
+                // Only need to update the orientation if the camera is mounted on the device
+                if (_externalCamera || _rotationHelper == null || m_mediaCapture == null) return;
+
+                // Add rotation metadata to the preview stream to make sure the aspect ratio / dimensions match when rendering and getting preview frames
+                var rotation = _rotationHelper.GetCameraPreviewOrientation();
+                var props = m_mediaCapture.VideoDeviceController.GetMediaStreamProperties(MediaStreamType.VideoPreview);
+                props.Properties.Add(new Guid("C380465D-2271-428C-9B83-ECEA3B4A85C1"), CameraRotationHelper.ConvertSimpleOrientationToClockwiseDegrees(rotation));
+                await m_mediaCapture.SetEncodingPropertiesAsync(MediaStreamType.VideoPreview, props, null);
+            }
         }
 
         public event EventHandler RecordingStarted;

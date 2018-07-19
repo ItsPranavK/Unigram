@@ -1,27 +1,12 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
+﻿using System.Collections.Generic;
 using System.Threading;
-using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.Services.Connection;
-using Telegram.Api.Services.DeviceInfo;
-using Telegram.Api.Services.Updates;
-using Telegram.Api.TL;
-using Telegram.Api.TL.Methods.Messages;
-using Telegram.Api.Transport;
 using Unigram.Core.Notifications;
 using Unigram.Core.Services;
 using Windows.ApplicationModel;
 using Windows.ApplicationModel.Background;
 using Windows.Security.ExchangeActiveSyncProvisioning;
-using Windows.System;
 using Windows.System.Profile;
-using Windows.UI.Notifications;
+using Unigram.Services;
 
 namespace Unigram.Tasks
 {
@@ -36,74 +21,47 @@ namespace Unigram.Tasks
             {
                 if (data.ContainsKey("QuickMessage"))
                 {
-                    var deviceInfoService = new DeviceInfoService();
-                    var eventAggregator = new TelegramEventAggregator();
-                    var cacheService = new InMemoryCacheService(eventAggregator);
-                    var updatesService = new UpdatesService(cacheService, eventAggregator);
-                    var transportService = new TransportService();
-                    var connectionService = new ConnectionService(deviceInfoService);
-                    var statsService = new StatsService();
                     var manualResetEvent = new ManualResetEvent(false);
-                    var protoService = new MTProtoService(deviceInfoService, updatesService, cacheService, transportService, connectionService, statsService);
 
-                    protoService.Initialized += (s, args) =>
+                    var text = data["QuickMessage"];
+                    var messageText = text.Replace("\r\n", "\n").Replace('\v', '\n').Replace('\r', '\n');
+                    //var entitiesBase = Markdown.Parse(ref messageText);
+
+                    var replyToMsgId = new int?();
+                    //var inputPeer = default(TLInputPeerBase);
+                    if (data.ContainsKey("from_id"))
                     {
-                        var text = data["QuickMessage"];
-                        var messageText = text.Replace("\r\n", "\n").Replace('\v', '\n').Replace('\r', '\n');
-
-                        var replyToMsgId = 0;
-                        var inputPeer = default(TLInputPeerBase);
-                        if (data.ContainsKey("from_id"))
-                        {
-                            inputPeer = new TLInputPeerUser { UserId = int.Parse(data["from_id"]), AccessHash = long.Parse(data["access_hash"]) };
-                        }
-                        else if (data.ContainsKey("channel_id"))
-                        {
-                            inputPeer = new TLInputPeerChannel { ChannelId = int.Parse(data["channel_id"]), AccessHash = long.Parse(data["access_hash"]) };
-                            replyToMsgId = data.ContainsKey("msg_id") ? int.Parse(data["msg_id"]) : 0;
-                        }
-                        else if (data.ContainsKey("chat_id"))
-                        {
-                            inputPeer = new TLInputPeerChat { ChatId = int.Parse(data["chat_id"]) };
-                            replyToMsgId = data.ContainsKey("msg_id") ? int.Parse(data["msg_id"]) : 0;
-                        }
-
-                        var obj = new TLMessagesSendMessage { Peer = inputPeer, ReplyToMsgId = replyToMsgId, Message = messageText, IsBackground = true, RandomId = TLLong.Random() };
-
-                        protoService.SendInformativeMessageInternal<TLUpdatesBase>("messages.sendMessage", obj, result =>
-                        {
-                            manualResetEvent.Set();
-                        },
-                        faultCallback: fault =>
-                        {
-                            // TODO: alert user?
-                            manualResetEvent.Set();
-                        },
-                        fastCallback: () =>
-                        {
-                            manualResetEvent.Set();
-                        });
-
-                        //var date = TLUtils.DateToUniversalTimeTLInt(protoService.ClientTicksDelta, DateTime.Now);
-                        //var message = TLUtils.GetMessage(SettingsHelper.UserId, inputPeer, TLMessageState.Sending, true, true, date, text, new TLMessageMediaEmpty(), TLLong.Random(), replyToMsgId);
-                        //var history = cacheService.GetHistory(inputPeer, 1);
-
-                        //cacheService.SyncSendingMessage(message, null, async (m) =>
-                        //{
-                        //    await protoService.SendMessageAsync(message, () => 
-                        //    {
-                        //        // TODO: fast callback
-                        //    });
-                        //    manualResetEvent.Set();
-                        //});
-                    };
-                    protoService.InitializationFailed += (s, args) =>
+                        //inputPeer = new TLInputPeerUser { UserId = int.Parse(data["from_id"]), AccessHash = long.Parse(data["access_hash"]) };
+                    }
+                    else if (data.ContainsKey("channel_id"))
                     {
-                        manualResetEvent.Set();
-                    };
+                        //inputPeer = new TLInputPeerChannel { ChannelId = int.Parse(data["channel_id"]), AccessHash = long.Parse(data["access_hash"]) };
+                        replyToMsgId = data.ContainsKey("msg_id") ? int.Parse(data["msg_id"]) : new int?();
+                    }
+                    else if (data.ContainsKey("chat_id"))
+                    {
+                        //inputPeer = new TLInputPeerChat { ChatId = int.Parse(data["chat_id"]) };
+                        replyToMsgId = data.ContainsKey("msg_id") ? int.Parse(data["msg_id"]) : new int?();
+                    }
 
-                    //cacheService.Init();
-                    protoService.Initialize();
+                    //TLVector<TLMessageEntityBase> entities = null;
+                    //if (entitiesBase != null)
+                    //{
+                    //    entities = new TLVector<TLMessageEntityBase>(entitiesBase);
+                    //}
+
+                    //var obj = new TLMessagesSendMessage { Peer = inputPeer, ReplyToMsgId = replyToMsgId, Message = messageText, Entities = entities, IsBackground = true, RandomId = TLLong.Random() };
+
+                    //ConnectionManager.Instance.UserId = SettingsHelper.UserId;
+                    //ConnectionManager.Instance.SendRequest(new TLInvokeWithoutUpdates { Query = obj }, (message, ex) =>
+                    //{
+                    //    manualResetEvent.Set();
+                    //},
+                    //() =>
+                    //{
+                    //    manualResetEvent.Set();
+                    //},
+                    //ConnectionManager.DefaultDatacenterId, ConnectionType.Generic, RequestFlag.CanCompress | RequestFlag.FailOnServerError | RequestFlag.RequiresQuickAck | RequestFlag.Immediate);
 
                     manualResetEvent.WaitOne(15000);
                 }

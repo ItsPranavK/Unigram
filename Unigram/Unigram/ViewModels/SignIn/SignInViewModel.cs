@@ -1,49 +1,53 @@
-﻿using System.Collections.Generic;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Unigram.Views.SignIn;
-using Telegram.Api.Aggregator;
-using Unigram.Common;
-using Unigram.Core.Models;
 using System;
-using Telegram.Api.Helpers;
-using Windows.UI.Popups;
-using Telegram.Api.TL;
-using Telegram.Api;
-using Windows.UI.Xaml;
-using System.ComponentModel;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
-using Windows.UI.Xaml.Navigation;
+using Telegram.Td.Api;
+using Unigram.Common;
 using Unigram.Controls;
+using Unigram.Controls.Views;
+using Unigram.Entities;
+using Unigram.Services;
+using Unigram.Views;
+using Unigram.Views.SignIn;
+using Windows.UI.Xaml.Controls;
+using Windows.UI.Xaml.Navigation;
 
 namespace Unigram.ViewModels.SignIn
 {
-
     public class SignInViewModel : UnigramViewModelBase
     {
-        public SignInViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator)
-            : base(protoService, cacheService, aggregator)
-        {
-            ProtoService.GotUserCountry += GotUserCountry;
+        private readonly INotificationsService _notificationsService;
 
-            if (!string.IsNullOrEmpty(ProtoService.Country))
-            {
-                GotUserCountry(this, new CountryEventArgs { Country = ProtoService.Country });
-            }
+        public SignInViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, INotificationsService notificationsService)
+            : base(protoService, cacheService, settingsService, aggregator)
+        {
+            _notificationsService = notificationsService;
+
+            SendCommand = new RelayCommand(SendExecute, () => !IsLoading);
+            ProxyCommand = new RelayCommand(ProxyExecute);
         }
 
         public override Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
         {
+            ProtoService.Send(new GetCountryCode(), result =>
+            {
+                if (result is Text text)
+                {
+                    BeginOnUIThread(() => GotUserCountry(text.TextValue));
+                }
+            });
+
             IsLoading = false;
             return Task.CompletedTask;
         }
 
-        private void GotUserCountry(object sender, CountryEventArgs e)
+        private void GotUserCountry(string code)
         {
             Country country = null;
             foreach (var local in Country.Countries)
             {
-                if (string.Equals(local.Code, e.Country, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(local.Code, code, StringComparison.OrdinalIgnoreCase))
                 {
                     country = local;
                     break;
@@ -52,7 +56,7 @@ namespace Unigram.ViewModels.SignIn
 
             if (country != null && SelectedCountry == null && string.IsNullOrEmpty(PhoneNumber))
             {
-                Execute.BeginOnUIThread(() =>
+                BeginOnUIThread(() =>
                 {
                     SelectedCountry = country;
                 });
@@ -126,42 +130,100 @@ namespace Unigram.ViewModels.SignIn
             }
         }
 
-        public List<KeyedList<string, Country>> Countries { get; } = Country.GroupedCountries;
+        public IList<Country> Countries { get; } = Country.Countries.OrderBy(x => x.DisplayName).ToList();
 
-        private RelayCommand _sendCommand;
-        public RelayCommand SendCommand => _sendCommand = _sendCommand ?? new RelayCommand(SendExecute, () => !IsLoading);
+        public RelayCommand SendCommand { get; }
         private async void SendExecute()
         {
-            if(PhoneCode == null || PhoneNumber == null)
+            if (string.IsNullOrEmpty(_phoneCode))
             {
-                await new MessageDialog("Please enter your phone number.").ShowQueuedAsync();
+                RaisePropertyChanged("PHONE_CODE_INVALID");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(_phoneNumber))
+            {
+                RaisePropertyChanged("PHONE_NUMBER_INVALID");
                 return;
             }
 
             IsLoading = true;
 
-            var response = await ProtoService.SendCodeAsync(_phoneCode + _phoneNumber, /* TODO: Verify */ null);
-            if (response.IsSucceeded)
-            {
-                var state = new SignInSentCodePage.NavigationParameters
-                {
-                    PhoneNumber = PhoneCode.TrimStart('+') + PhoneNumber,
-                    Result = response.Result,
-                };
+            var phoneNumber = (_phoneCode + _phoneNumber).Replace(" ", string.Empty);
 
-                NavigationService.Navigate(typeof(SignInSentCodePage), state);
-            }
-            else if (response.Error != null)
+            await _notificationsService.CloseAsync();
+
+            var response = await ProtoService.SendAsync(new SetAuthenticationPhoneNumber(phoneNumber, false, false));
+            if (response is Error error)
             {
                 IsLoading = false;
 
-                if (response.Error.TypeEquals(TLErrorType.PHONE_NUMBER_FLOOD))
+                if (error.TypeEquals(ErrorType.PHONE_NUMBER_INVALID))
                 {
-                    await TLMessageDialog.ShowAsync("Sorry, you have deleted and re-created your account too many times recently. Please wait for a few days before signing up again.", "Telegram", "OK");
+                    //needShowInvalidAlert(req.phone_number, false);
                 }
-                else
+                else if (error.TypeEquals(ErrorType.PHONE_NUMBER_FLOOD))
                 {
-                    await new MessageDialog(response.Error.ErrorMessage ?? "Error message", response.Error.ErrorCode.ToString()).ShowQueuedAsync();
+                    await TLMessageDialog.ShowAsync(Strings.Resources.PhoneNumberFlood, Strings.Resources.AppName, Strings.Resources.OK);
+                }
+                //else if (response.Error.TypeEquals(TLErrorType.PHONE_NUMBER_BANNED))
+                //{
+                //    needShowInvalidAlert(req.phone_number, true);
+                //}
+                else if (error.TypeEquals(ErrorType.PHONE_CODE_EMPTY) || error.TypeEquals(ErrorType.PHONE_CODE_INVALID))
+                {
+                    await TLMessageDialog.ShowAsync(Strings.Resources.InvalidCode, Strings.Resources.AppName, Strings.Resources.OK);
+                }
+                else if (error.TypeEquals(ErrorType.PHONE_CODE_EXPIRED))
+                {
+                    await TLMessageDialog.ShowAsync(Strings.Resources.CodeExpired, Strings.Resources.AppName, Strings.Resources.OK);
+                }
+                else if (error.Message.StartsWith("FLOOD_WAIT"))
+                {
+                    await TLMessageDialog.ShowAsync(Strings.Resources.FloodWait, Strings.Resources.AppName, Strings.Resources.OK);
+                }
+                else if (error.Code != -1000)
+                {
+                    await TLMessageDialog.ShowAsync(error.Message, Strings.Resources.AppName, Strings.Resources.OK);
+                }
+            }
+        }
+
+        public RelayCommand ProxyCommand { get; }
+        private async void ProxyExecute()
+        {
+            var proxy = Settings.Proxy;
+
+            var dialog = new ProxyView(false);
+            dialog.Server = proxy.Server;
+            dialog.Port = proxy.Port.ToString();
+            dialog.Username = proxy.Username;
+            dialog.Password = proxy.Password;
+            dialog.IsProxyEnabled = proxy.IsEnabled;
+            dialog.IsCallsProxyEnabled = proxy.IsCallsEnabled;
+
+            var enabled = proxy.IsEnabled == true;
+
+            var confirm = await dialog.ShowQueuedAsync();
+            if (confirm == ContentDialogResult.Primary)
+            {
+                var server = proxy.Server = dialog.Server ?? string.Empty;
+                var port = proxy.Port = Extensions.TryParseOrDefault(dialog.Port, 1080);
+                var username = proxy.Username = dialog.Username ?? string.Empty;
+                var password = proxy.Password = dialog.Password ?? string.Empty;
+                var newValue = proxy.IsEnabled = dialog.IsProxyEnabled;
+                proxy.IsCallsEnabled = dialog.IsCallsProxyEnabled;
+
+                if (newValue || newValue != enabled)
+                {
+                    if (newValue)
+                    {
+                        //ProtoService.Send(new SetProxy(new ProxySocks5(server, port, username, password)));
+                    }
+                    else
+                    {
+                        //ProtoService.Send(new SetProxy(new ProxyEmpty()));
+                    }
                 }
             }
         }

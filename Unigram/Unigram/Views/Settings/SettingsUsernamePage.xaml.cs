@@ -27,14 +27,14 @@ namespace Unigram.Views.Settings
         public SettingsUsernamePage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<SettingsUsernameViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<SettingsUsernameViewModel>();
 
             var observable = Observable.FromEventPattern<TextChangedEventArgs>(Username, "TextChanged");
-            var throttled = observable.Throttle(TimeSpan.FromMilliseconds(500)).ObserveOnDispatcher().Subscribe(x =>
+            var throttled = observable.Throttle(TimeSpan.FromMilliseconds(Constants.TypingTimeout)).ObserveOnDispatcher().Subscribe(x =>
             {
                 if (ViewModel.UpdateIsValid(Username.Text))
                 {
-                    ViewModel.CheckIfAvailableAsync(Username.Text);
+                    ViewModel.CheckAvailability(Username.Text);
                 }
             });
         }
@@ -43,5 +43,18 @@ namespace Unigram.Views.Settings
         {
             ViewModel.CopyCommand.Execute();
         }
+
+        #region Binding
+
+        public string UsernameHelpLink
+        {
+            get
+            {
+                return string.Format(Strings.Resources.UsernameHelpLink, string.Empty).TrimEnd();
+            }
+        }
+
+        #endregion
+
     }
 }

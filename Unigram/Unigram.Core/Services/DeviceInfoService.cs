@@ -3,28 +3,25 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services.DeviceInfo;
 using Windows.ApplicationModel;
 using Windows.Networking.Connectivity;
 using Windows.Security.ExchangeActiveSyncProvisioning;
 using Windows.System;
 using Windows.System.Profile;
 
-namespace Unigram.Core.Services
+namespace Unigram.Services
 {
-    interface IUserConfiguration
+    public interface IDeviceInfoService
     {
         string DeviceModel { get; }
-        string SystemVersion { get; }
         string AppVersion { get; }
-        string Language { get; }
-        //[propget] HRESULT ConfigurationPath([out][retval] HSTRING* value);
-        //[propget] HRESULT LogPath([out][retval] HSTRING* value);
-        int UserId { get; }
+        string SystemVersion { get; }
+        bool IsBackground { get; }
+        string BackgroundTaskName { get; }
+        int BackgroundTaskId { get; }
     }
 
-    public class DeviceInfoService : IDeviceInfoService, IUserConfiguration
+    public class DeviceInfoService : IDeviceInfoService
     {
         public bool IsBackground
         {
@@ -77,14 +74,14 @@ namespace Unigram.Core.Services
         {
             get
             {
+                //return "4.7";
+
                 var v = Package.Current.Id.Version;
                 return $"{v.Major}.{v.Minor}.{v.Build}.{v.Revision}";
             }
         }
 
         public string Language => Windows.System.UserProfile.GlobalizationPreferences.Languages[0];
-
-        public int UserId => SettingsHelper.UserId;
 
         public bool IsLowMemoryDevice
         {

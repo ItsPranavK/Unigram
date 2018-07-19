@@ -24,15 +24,23 @@ namespace Unigram.Views.Settings
         public SettingsNotificationsPage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<SettingsNotificationsViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<SettingsNotificationsViewModel>();
         }
 
-        protected override void OnNavigatedTo(NavigationEventArgs e)
+        private async void Private_Click(object sender, RoutedEventArgs e)
         {
-            while (Frame.BackStackDepth > 1)
-            {
-                Frame.BackStack.RemoveAt(1);
-            }
+            ViewModel.PrivateAlert = PrivateAlert.IsChecked == true;
+            ViewModel.PrivatePreview = PrivatePreview.IsChecked == true;
+
+            await ViewModel.UpdatePrivateAsync();
+        }
+
+        private async void Group_Click(object sender, RoutedEventArgs e)
+        {
+            ViewModel.GroupAlert = GroupAlert.IsChecked == true;
+            ViewModel.GroupPreview = GroupPreview.IsChecked == true;
+
+            await ViewModel.UpdateGroupAsync();
         }
     }
 }

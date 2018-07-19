@@ -1,222 +1,261 @@
-﻿using System;
+using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Diagnostics;
-using System.Linq;
-using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
-using Telegram.Api.TL.Methods.Phone;
-using Telegram.Api.TL.Methods.Contacts;
-using Unigram.Collections;
+using Template10.Common;
 using Unigram.Common;
-using Unigram.Converters;
-using Unigram.Core.Notifications;
+using Unigram.Common.Dialogs;
+using Unigram.Controls.Views;
 using Unigram.Core.Services;
+using Unigram.Services;
 using Unigram.Views;
-using Windows.ApplicationModel.Background;
-using Windows.Globalization.DateTimeFormatting;
-using Windows.Networking.PushNotifications;
-using Windows.Security.Authentication.Web;
-using Windows.Security.Cryptography;
-using Windows.Security.Cryptography.Core;
-using Windows.UI.Xaml;
-using Windows.UI.Xaml.Media;
-using Windows.UI.Xaml.Media.Imaging;
+using Windows.Media.Playback;
 using Windows.UI.Xaml.Navigation;
-using Unigram.Controls;
-using Org.BouncyCastle.Security;
-using Org.BouncyCastle.Math;
-using Unigram.Core;
+using Telegram.Td.Api;
 
 namespace Unigram.ViewModels
 {
-    public class MainViewModel : UnigramViewModelBase, IHandle<TLUpdatePhoneCall>, IHandle
+    public class MainViewModel : UnigramViewModelBase, IHandle<UpdateServiceNotification>
     {
-        private readonly IPushService _pushService;
+        private readonly INotificationsService _pushService;
+        private readonly IVibrationService _vibrationService;
+        private readonly ILiveLocationService _liveLocationService;
+        private readonly IPasscodeService _passcodeService;
 
-        public MainViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator, IPushService pushService, IContactsService contactsService, DialogsViewModel dialogs)
-            : base(protoService, cacheService, aggregator)
+        private readonly ConcurrentDictionary<int, InputTypingManager> _typingManagers;
+        private readonly ConcurrentDictionary<int, InputTypingManager> _chatTypingManagers;
+
+        public bool Refresh { get; set; }
+
+        public MainViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, INotificationsService pushService, IVibrationService vibrationService, ILiveLocationService liveLocationService, IContactsService contactsService, IPasscodeService passcodeService)
+            : base(protoService, cacheService, settingsService, aggregator)
         {
             _pushService = pushService;
+            _vibrationService = vibrationService;
+            _liveLocationService = liveLocationService;
+            _passcodeService = passcodeService;
+
+            _typingManagers = new ConcurrentDictionary<int, InputTypingManager>();
+            _chatTypingManagers = new ConcurrentDictionary<int, InputTypingManager>();
 
             //Dialogs = new DialogCollection(protoService, cacheService);
-            SearchDialogs = new ObservableCollection<TLDialog>();
-            Dialogs = dialogs;
-            Contacts = new ContactsViewModel(protoService, cacheService, aggregator, contactsService);
-            Calls = new CallsViewModel(protoService, cacheService, aggregator);
+            Chats = new ChatsViewModel(protoService, cacheService, settingsService, aggregator);
+            Contacts = new ContactsViewModel(protoService, cacheService, settingsService, aggregator, contactsService);
+            Calls = new CallsViewModel(protoService, cacheService, settingsService, aggregator);
+            Settings = new SettingsViewModel(protoService, cacheService, settingsService, aggregator, pushService, contactsService);
 
             aggregator.Subscribe(this);
+
+            LiveLocationCommand = new RelayCommand(LiveLocationExecute);
+            StopLiveLocationCommand = new RelayCommand(StopLiveLocationExecute);
+        }
+
+        public override IDispatcherWrapper Dispatcher
+        {
+            get => base.Dispatcher;
+            set
+            {
+                base.Dispatcher = value;
+                Chats.Dispatcher = value;
+                Contacts.Dispatcher = value;
+                Calls.Dispatcher = value;
+                Settings.Dispatcher = value;
+            }
+        }
+
+        public ILiveLocationService LiveLocation => _liveLocationService;
+        public IPasscodeService Passcode => _passcodeService;
+
+        public RelayCommand LiveLocationCommand { get; }
+        private async void LiveLocationExecute()
+        {
+            await new LiveLocationsView().ShowQueuedAsync();
+        }
+
+        public RelayCommand StopLiveLocationCommand { get; }
+        private void StopLiveLocationExecute()
+        {
+            _liveLocationService.StopTracking();
+        }
+
+        private int _unreadMutedCount;
+        public int UnreadMutedCount
+        {
+            get
+            {
+                return _unreadMutedCount;
+            }
+            set
+            {
+                Set(ref _unreadMutedCount, value);
+            }
+        }
+
+        #region Typing
+
+        //public void Handle(TLUpdateUserTyping update)
+        //{
+        //    var user = CacheService.GetUser(update.UserId) as TLUser;
+        //    if (user == null)
+        //    {
+        //        return;
+        //    }
+
+        //    if (user.IsSelf)
+        //    {
+        //        return;
+        //    }
+
+        //    //var dialog = CacheService.GetDialog(user.ToPeer());
+        //    //if (dialog == null)
+        //    //{
+        //    //    return;
+        //    //}
+
+        //    //_typingManagers.TryGetValue(update.UserId, out InputTypingManager typingManager);
+        //    //if (typingManager == null)
+        //    //{
+        //    //    typingManager = new InputTypingManager(users =>
+        //    //    {
+        //    //        dialog.TypingSubtitle = DialogViewModel.GetTypingString(user.ToPeer(), users, CacheService.GetUser, null);
+        //    //        dialog.IsTyping = true;
+        //    //    },
+        //    //    () =>
+        //    //    {
+        //    //        dialog.TypingSubtitle = null;
+        //    //        dialog.IsTyping = false;
+        //    //    });
+
+        //    //    _typingManagers[update.UserId] = typingManager;
+        //    //}
+
+        //    //var action = update.Action;
+        //    //if (action is TLSendMessageCancelAction)
+        //    //{
+        //    //    typingManager.RemoveTypingUser(update.UserId);
+        //    //    return;
+        //    //}
+
+        //    //typingManager.AddTypingUser(update.UserId, action);
+        //}
+
+        //public void Handle(TLUpdateChatUserTyping update)
+        //{
+        //    var chat = CacheService.GetChat(update.ChatId) as TLChatBase;
+        //    if (chat == null)
+        //    {
+        //        return;
+        //    }
+
+        //    //var dialog = CacheService.GetDialog(chat.ToPeer());
+        //    //if (dialog == null)
+        //    //{
+        //    //    return;
+        //    //}
+
+        //    //_typingManagers.TryGetValue(update.ChatId, out InputTypingManager typingManager);
+        //    //if (typingManager == null)
+        //    //{
+        //    //    typingManager = new InputTypingManager(users =>
+        //    //    {
+        //    //        dialog.TypingSubtitle = DialogViewModel.GetTypingString(chat.ToPeer(), users, CacheService.GetUser, null);
+        //    //        dialog.IsTyping = true;
+        //    //    },
+        //    //    () =>
+        //    //    {
+        //    //        dialog.TypingSubtitle = null;
+        //    //        dialog.IsTyping = false;
+        //    //    });
+
+        //    //    _typingManagers[update.ChatId] = typingManager;
+        //    //}
+
+        //    //var action = update.Action;
+        //    //if (action is TLSendMessageCancelAction)
+        //    //{
+        //    //    typingManager.RemoveTypingUser(update.UserId);
+        //    //    return;
+        //    //}
+
+        //    //typingManager.AddTypingUser(update.UserId, action);
+        //}
+
+        #endregion
+
+        public void Handle(UpdateServiceNotification update)
+        {
+
         }
 
         public override Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
         {
-            Task.Run(() => _pushService.RegisterAsync());
+            if (mode == NavigationMode.New)
+            {
+                Execute.BeginOnThreadPool(() => _pushService.RegisterAsync());
+            }
 
-            Execute.BeginOnUIThread(() => Calls.OnNavigatedToAsync(parameter, mode, state));
-            //Execute.BeginOnUIThread(() => Dialogs.LoadFirstSlice());
-            //Execute.BeginOnUIThread(() => Contacts.getTLContacts());
-            //Execute.BeginOnUIThread(() => Contacts.GetSelfAsync());
+            BeginOnUIThread(() => Calls.OnNavigatedToAsync(parameter, mode, state));
+            BeginOnUIThread(() => Settings.OnNavigatedToAsync(parameter, mode, state));
+            //Dispatch(() => Dialogs.LoadFirstSlice());
+            //Dispatch(() => Contacts.getTLContacts());
+            //Dispatch(() => Contacts.GetSelfAsync());
+
+            UnreadMutedCount = CacheService.UnreadCount - CacheService.UnreadUnmutedCount;
 
             return Task.CompletedTask;
         }
 
-        private byte[] secretP;
-        private byte[] a_or_b;
-
-        public async void Handle(TLUpdatePhoneCall update)
-        {
-            await VoIPConnection.Current.SendUpdateAsync(update);
-            await Task.Delay(2000);
-
-            //if (update.PhoneCall is TLPhoneCallDiscarded discarded)
-            //{
-            //    if (discarded.IsNeedRating)
-            //    {
-            //        Debugger.Break();
-            //    }
-
-            //    if (discarded.IsNeedDebug)
-            //    {
-            //        Debugger.Break();
-            //    }
-            //}
-
-            return;
-
-            if (update.PhoneCall is TLPhoneCallRequested callRequested)
-            {
-                var reqReceived = new TLPhoneReceivedCall();
-                reqReceived.Peer = new TLInputPhoneCall();
-                reqReceived.Peer.Id = callRequested.Id;
-                reqReceived.Peer.AccessHash = callRequested.AccessHash;
-
-                ProtoService.SendRequestAsync<bool>("phone.receivedCall", reqReceived, null, null);
-
-                var user = CacheService.GetUser(callRequested.AdminId) as TLUser;
-
-                Execute.BeginOnUIThread(async () =>
-                {
-                    var dialog = await TLMessageDialog.ShowAsync(user.DisplayName, "CAAAALLL", "OK", "Cancel");
-                    if (dialog == Windows.UI.Xaml.Controls.ContentDialogResult.Primary)
-                    {
-                        var config = await ProtoService.GetDHConfigAsync(0, 256);
-                        if (config.IsSucceeded)
-                        {
-                            var dh = config.Result;
-                            if (!TLUtils.CheckPrime(dh.P, dh.G))
-                            {
-                                return;
-                            }
-
-                            secretP = dh.P;
-
-                            var salt = new byte[256];
-                            var secureRandom = new SecureRandom();
-                            secureRandom.NextBytes(salt);
-
-                            a_or_b = salt;
-
-                            var g_b = MTProtoService.GetGB(salt, dh.G, dh.P);
-
-                            var request = new TLPhoneAcceptCall
-                            {
-                                GB = g_b,
-                                Peer = new TLInputPhoneCall
-                                {
-                                    Id = callRequested.Id,
-                                    AccessHash = callRequested.AccessHash
-                                },
-                                Protocol = new TLPhoneCallProtocol
-                                {
-                                    IsUdpP2p = true,
-                                    IsUdpReflector = true,
-                                    MinLayer = 65,
-                                    MaxLayer = 65,
-                                }
-                            };
-
-                            var response = await ProtoService.SendRequestAsync<TLPhonePhoneCall>("phone.acceptCall", request);
-                            if (response.IsSucceeded)
-                            {
-                            }
-                        }
-                    }
-                    else
-                    {
-                        var req = new TLPhoneDiscardCall();
-                        req.Peer = new TLInputPhoneCall();
-                        req.Peer.Id = callRequested.Id;
-                        req.Peer.AccessHash = callRequested.AccessHash;
-                        req.Reason = new TLPhoneCallDiscardReasonHangup();
-
-                        ProtoService.SendRequestAsync<TLPhonePhoneCall>("phone.acceptCall", req, null, null);
-                    }
-                });
-            }
-            else if (update.PhoneCall is TLPhoneCall call)
-            {
-                var auth_key = computeAuthKey(call);
-                var g_a = call.GAOrB;
-
-                var buffer = TLUtils.Combine(auth_key, g_a);
-                var sha256 = Utils.ComputeSHA256(buffer);
-
-                var emoji = EncryptionKeyEmojifier.EmojifyForCall(sha256);
-
-                var user = CacheService.GetUser(call.AdminId) as TLUser;
-
-                Execute.BeginOnUIThread(async () =>
-                {
-                    var dialog = await TLMessageDialog.ShowAsync(user.DisplayName, string.Join(" ", emoji), "OK");
-                });
-            }
-        }
-
-        private byte[] computeAuthKey(TLPhoneCall call)
-        {
-            BigInteger g_a = new BigInteger(1, call.GAOrB);
-            BigInteger p = new BigInteger(1, secretP);
-
-            g_a = g_a.ModPow(new BigInteger(1, a_or_b), p);
-
-            byte[] authKey = g_a.ToByteArray();
-            if (authKey.Length > 256)
-            {
-                byte[] correctedAuth = new byte[256];
-                Buffer.BlockCopy(authKey, authKey.Length - 256, correctedAuth, 0, 256);
-                authKey = correctedAuth;
-            }
-            else if (authKey.Length < 256)
-            {
-                byte[] correctedAuth = new byte[256];
-                Buffer.BlockCopy(authKey, 0, correctedAuth, 256 - authKey.Length, authKey.Length);
-                for (int a = 0; a < 256 - authKey.Length; a++)
-                {
-                    authKey[a] = 0;
-                }
-                authKey = correctedAuth;
-            }
-            byte[] authKeyHash = Utils.ComputeSHA1(authKey);
-            byte[] authKeyId = new byte[8];
-            Buffer.BlockCopy(authKeyHash, authKeyHash.Length - 8, authKeyId, 0, 8);
-
-            return authKey;
-        }
-
-        //END OF EXPERIMENTS
-        //public DialogCollection Dialogs { get; private set; }
-
-        public ObservableCollection<TLDialog> SearchDialogs { get; private set; }
-
-        public DialogsViewModel Dialogs { get; private set; }
-
+        public ChatsViewModel Chats { get; private set; }
         public ContactsViewModel Contacts { get; private set; }
-
         public CallsViewModel Calls { get; private set; }
+        public SettingsViewModel Settings { get; private set; }
+    }
+
+    public class YoloTimer
+    {
+        private Timer _timer;
+        private TimerCallback _callback;
+        private DateTime? _start;
+
+        public YoloTimer(TimerCallback callback, object state)
+        {
+            _callback = callback;
+            _timer = new Timer(OnCallback, state, Timeout.Infinite, Timeout.Infinite);
+        }
+
+        private void OnCallback(object state)
+        {
+            _start = null;
+            _callback(state);
+        }
+
+        public void CallOnce(int seconds)
+        {
+            _start = DateTime.Now;
+            _timer.Change(seconds * 1000, Timeout.Infinite);
+        }
+
+        public bool IsActive
+        {
+            get
+            {
+                return _start.HasValue;
+            }
+        }
+
+        public TimeSpan RemainingTime
+        {
+            get
+            {
+                if (_start.HasValue)
+                {
+                    return DateTime.Now - _start.Value;
+                }
+
+                return TimeSpan.Zero;
+            }
+        }
     }
 }

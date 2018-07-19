@@ -1,32 +1,32 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Telegram.Api.Aggregator;
-using Telegram.Api.Helpers;
-using Telegram.Api.Services;
-using Telegram.Api.Services.Cache;
-using Telegram.Api.TL;
+using Telegram.Td.Api;
 using Unigram.Common;
 using Unigram.Controls;
 using Unigram.Core.Services;
+using Unigram.Services;
+using Unigram.Strings;
 using Windows.Foundation.Metadata;
 using Windows.UI.Xaml.Controls;
 using Windows.UI.Xaml.Navigation;
 
 namespace Unigram.ViewModels.Settings
 {
-    public class SettingsNotificationsViewModel : UnigramViewModelBase, IHandle<TLUpdateNotifySettings>, IHandle
+    public class SettingsNotificationsViewModel : UnigramViewModelBase, IHandle<UpdateScopeNotificationSettings>
     {
         private readonly IVibrationService _vibrationService;
 
         private bool _suppressUpdating;
 
-        public SettingsNotificationsViewModel(IMTProtoService protoService, ICacheService cacheService, ITelegramEventAggregator aggregator, IVibrationService vibrationService) 
-            : base(protoService, cacheService, aggregator)
+        public SettingsNotificationsViewModel(IProtoService protoService, ICacheService cacheService, ISettingsService settingsService, IEventAggregator aggregator, IVibrationService vibrationService) 
+            : base(protoService, cacheService, settingsService, aggregator)
         {
             _vibrationService = vibrationService;
+
+            ResetCommand = new RelayCommand(ResetExecute);
 
             Aggregator.Subscribe(this);
             PropertyChanged += OnPropertyChanged;
@@ -34,8 +34,41 @@ namespace Unigram.ViewModels.Settings
 
         public override async Task OnNavigatedToAsync(object parameter, NavigationMode mode, IDictionary<string, object> state)
         {
+            ProtoService.Send(new GetScopeNotificationSettings(new NotificationSettingsScopePrivateChats()), result =>
+            {
+                if (result is ScopeNotificationSettings settings)
+                {
+                    BeginOnUIThread(() =>
+                    {
+                        PrivateAlert = settings.MuteFor == 0;
+                        PrivatePreview = settings.ShowPreview;
+                    });
+                }
+            });
+
+            ProtoService.Send(new GetScopeNotificationSettings(new NotificationSettingsScopeGroupChats()), result =>
+            {
+                if (result is ScopeNotificationSettings settings)
+                {
+                    BeginOnUIThread(() =>
+                    {
+                        GroupAlert = settings.MuteFor == 0;
+                        GroupPreview = settings.ShowPreview;
+                    });
+                }
+            });
+
             IsVibrationAvailable = await _vibrationService.GetAvailabilityAsync();
-            await UpdateAsync();
+        }
+
+        public Task UpdatePrivateAsync()
+        {
+            return ProtoService.SendAsync(new SetScopeNotificationSettings(new NotificationSettingsScopePrivateChats(), new ScopeNotificationSettings(_privateAlert ? 0 : int.MaxValue, string.Empty, _privatePreview)));
+        }
+
+        public Task UpdateGroupAsync()
+        {
+            return ProtoService.SendAsync(new SetScopeNotificationSettings(new NotificationSettingsScopeGroupChats(), new ScopeNotificationSettings(_groupAlert ? 0 : int.MaxValue, string.Empty, _groupPreview)));
         }
 
         private async void OnPropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -48,33 +81,6 @@ namespace Unigram.ViewModels.Settings
             if (e.PropertyName.Equals(nameof(InAppVibrate)) && InAppVibrate && IsVibrationAvailable)
             {
                 await _vibrationService.VibrateAsync();
-            }
-
-            if (e.PropertyName.Equals(nameof(PrivateAlert)) || e.PropertyName.Equals(nameof(PrivatePreview)) || e.PropertyName.Equals(nameof(PrivateSound)))
-            {
-                if (e.PropertyName.Equals(nameof(PrivateSound)) && !string.IsNullOrEmpty(PrivateSound))
-                {
-                }
-
-                await ProtoService.UpdateNotifySettingsAsync(new TLInputNotifyUsers(), new TLInputPeerNotifySettings
-                {
-                    MuteUntil = _privateAlert ? 0 : int.MaxValue,
-                    IsShowPreviews = _privatePreview,
-                    //Sound = _privateSound
-                });
-            }
-            else if (e.PropertyName.Equals(nameof(GroupAlert)) || e.PropertyName.Equals(nameof(GroupPreview)) || e.PropertyName.Equals(nameof(GroupSound)))
-            {
-                if (e.PropertyName.Equals(nameof(GroupSound)) && !string.IsNullOrEmpty(GroupSound))
-                {
-                }
-
-                await ProtoService.UpdateNotifySettingsAsync(new TLInputNotifyChats(), new TLInputPeerNotifySettings
-                {
-                    MuteUntil = _groupAlert ? 0 : int.MaxValue,
-                    IsShowPreviews = _groupPreview,
-                    //Sound = _privateSound
-                });
             }
         }
 
@@ -179,121 +185,86 @@ namespace Unigram.ViewModels.Settings
             }
         }
 
-        private bool _inAppSounds;
         public bool InAppSounds
         {
             get
             {
-                return _inAppSounds;
+                return Settings.Notifications.InAppSounds;
             }
             set
             {
-                Set(ref _inAppSounds, value);
+                Settings.Notifications.InAppSounds = value;
+                RaisePropertyChanged();
             }
         }
 
-        private bool _inAppVibrate;
         public bool InAppVibrate
         {
             get
             {
-                return _inAppVibrate;
+                return Settings.Notifications.InAppVibrate;
             }
             set
             {
-                Set(ref _inAppVibrate, value);
+                Settings.Notifications.InAppVibrate = value;
+                RaisePropertyChanged();
             }
         }
 
-        private bool _inAppPreview;
         public bool InAppPreview
         {
             get
             {
-                return _inAppPreview;
+                return Settings.Notifications.InAppPreview;
             }
             set
             {
-                Set(ref _inAppPreview, value);
+                Settings.Notifications.InAppPreview = value;
+                RaisePropertyChanged();
             }
         }
 
         #endregion
 
-        private async Task UpdateAsync()
+        public bool IncludeMutedChats
         {
-            ProtoService.GetNotifySettingsAsync(new TLInputNotifyUsers(), result =>
+            get
             {
-
-                var settings = result as TLPeerNotifySettings;
-                if (settings != null)
-                {
-                    Execute.BeginOnUIThread(() =>
-                    {
-                        _suppressUpdating = true;
-                        PrivateAlert = settings.MuteUntil == 0;
-                        PrivatePreview = settings.IsShowPreviews;
-                        _suppressUpdating = false;
-                    });
-                    //sound = Enumerable.FirstOrDefault<string>(this.StateService.Sounds, (string x) => string.Equals(x, settings.Sound.Value, 5));
-                    //this.Settings.ContactSound = (sound ?? this.StateService.Sounds.get_Item(0));
-                }
-
-                //this.SaveSettings();
-            });
-
-            ProtoService.GetNotifySettingsAsync(new TLInputNotifyChats(), result =>
+                return Settings.Notifications.IncludeMutedChats;
+            }
+            set
             {
-
-                var settings = result as TLPeerNotifySettings;
-                if (settings != null)
-                {
-                    Execute.BeginOnUIThread(() =>
-                    {
-                        _suppressUpdating = true;
-                        GroupAlert = settings.MuteUntil == 0;
-                        GroupPreview = settings.IsShowPreviews;
-                        _suppressUpdating = false;
-                    });
-                    //sound = Enumerable.FirstOrDefault<string>(this.StateService.Sounds, (string x) => string.Equals(x, settings.Sound.Value, 5));
-                    //this.Settings.GroupSound = (sound ?? this.StateService.Sounds.get_Item(0));
-                }
-
-                //this.SaveSettings();
-            });
+                Settings.Notifications.IncludeMutedChats = value;
+                RaisePropertyChanged();
+            }
         }
 
-        public void Handle(TLUpdateNotifySettings update)
+        public void Handle(UpdateScopeNotificationSettings update)
         {
-            var settings = update.NotifySettings as TLPeerNotifySettings;
-
-            var notifyUsers = update.Peer as TLNotifyUsers;
-            if (notifyUsers != null && settings != null)
+            if (update.Scope is NotificationSettingsScopePrivateChats)
             {
-                Execute.BeginOnUIThread(() =>
+                BeginOnUIThread(() =>
                 {
-                    PrivateAlert = settings.MuteUntil == 0;
-                    PrivatePreview = settings.IsShowPreviews;
+                    PrivateAlert = update.NotificationSettings.MuteFor == 0;
+                    PrivatePreview = update.NotificationSettings.ShowPreview;
                 });
             }
-
-            var notifyChats = update.Peer as TLNotifyChats;
-            if (notifyChats != null && settings != null)
+            else if (update.Scope is NotificationSettingsScopeGroupChats)
             {
-                Execute.BeginOnUIThread(() =>
+                BeginOnUIThread(() =>
                 {
-                    GroupAlert = settings.MuteUntil == 0;
-                    GroupPreview = settings.IsShowPreviews;
+                    GroupAlert = update.NotificationSettings.MuteFor == 0;
+                    GroupPreview = update.NotificationSettings.ShowPreview;
                 });
             }
         }
 
-        public RelayCommand ResetCommand => new RelayCommand(ResetExecute);
-        private async void ResetExecute()
+        public RelayCommand ResetCommand { get; }
+        private void ResetExecute()
         {
-            var confirm = await TLMessageDialog.ShowAsync("Reset all notifications?", "Confirm", "OK", "Cancel");
-            if (confirm == ContentDialogResult.Primary)
-            {
+            //var confirm = await TLMessageDialog.ShowAsync(Strings.Additional.ResetNotificationsDialogBody, Strings.Additional.ResetNotificationsDialogTitle, Strings.Additional.OK, Strings.Additional.Cancel);
+            //if (confirm == ContentDialogResult.Primary)
+            //{
                 _suppressUpdating = true;
                 PrivateAlert = true;
                 PrivatePreview = true;
@@ -306,8 +277,8 @@ namespace Unigram.ViewModels.Settings
                 InAppVibrate = true;
                 _suppressUpdating = false;
 
-                var response = await ProtoService.ResetNotifySettingsAsync();
-            }
+            ProtoService.Send(new ResetAllNotificationSettings());
+            //}
         }
     }
 }

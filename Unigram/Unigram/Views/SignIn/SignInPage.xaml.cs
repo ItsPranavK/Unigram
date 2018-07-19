@@ -16,6 +16,10 @@ using Windows.UI.Xaml.Input;
 using Windows.UI.Xaml.Media;
 using Windows.UI.Xaml.Navigation;
 using Windows.Web.Http;
+using Unigram.Common;
+using Unigram.Entities;
+using Telegram.Helpers;
+using System.Text;
 
 namespace Unigram.Views.SignIn
 {
@@ -26,7 +30,22 @@ namespace Unigram.Views.SignIn
         public SignInPage()
         {
             InitializeComponent();
-            DataContext = UnigramContainer.Current.ResolveType<SignInViewModel>();
+            DataContext = UnigramContainer.Current.Resolve<SignInViewModel>();
+
+            ViewModel.PropertyChanged += OnPropertyChanged;
+        }
+
+        private void OnPropertyChanged(object sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            switch (e.PropertyName)
+            {
+                case "PHONE_CODE_INVALID":
+                    VisualUtilities.ShakeView(PhoneCode);
+                    break;
+                case "PHONE_NUMBER_INVALID":
+                    VisualUtilities.ShakeView(PrimaryInput);
+                    break;
+            }
         }
 
         private void OnLoaded(object sender, RoutedEventArgs e)
@@ -41,6 +60,43 @@ namespace Unigram.Views.SignIn
                 ViewModel.SendCommand.Execute(sender);
                 e.Handled = true;
             }
+            else if (e.Key == Windows.System.VirtualKey.Back && string.IsNullOrEmpty(PrimaryInput.Text))
+            {
+                PhoneCode.Focus(FocusState.Keyboard);
+                PhoneCode.SelectionStart = PhoneCode.Text.Length;
+                e.Handled = true;
+            }
         }
+
+        #region Binding
+
+        private string ConvertFormat(Country country)
+        {
+            if (country == null)
+            {
+                return null;
+            }
+
+            var groups = PhoneNumber.Parse(country.PhoneCode);
+            var builder = new StringBuilder();
+
+            for (int i = 1; i < groups.Length; i++)
+            {
+                for (int j = 0; j < groups[i]; j++)
+                {
+                    builder.Append('-');
+                }
+
+                if (i + 1 < groups.Length)
+                {
+                    builder.Append(' ');
+                }
+            }
+
+            return builder.ToString();
+        }
+
+        #endregion
+
     }
 }
